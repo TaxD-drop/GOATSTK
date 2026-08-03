@@ -8,6 +8,9 @@ if BUNDLE_URL:find("COLOQUE_AQUI", 1, true) then
     return
 end
 
+local env = if typeof(getgenv) == "function" then getgenv() else _G
+env.__GOATHUB_STK_RELOAD_URL = BUNDLE_URL
+
 local ok, source = pcall(function()
     return game:HttpGet(BUNDLE_URL)
 end)

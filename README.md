@@ -37,6 +37,8 @@ quando executado fora do jogo/place configurado.
 
 Reexecutar o bundle é seguro para o próprio Hub: uma instância anterior é parada,
 suas conexões/loops/highlights são removidos e a nova interface assume o lugar.
+Os estados dos checkboxes e dos dois campos numéricos são serializados em
+`TeleportService` e reaplicados após a nova execução.
 
 ## Recursos
 
@@ -86,10 +88,16 @@ entra em um servidor aleatório com pessoas e vaga, valida os níveis depois de
 entrar e troca novamente se necessário. Ele mantém uma fila dos últimos 10 JobIds;
 ao adicionar o 11º, remove o mais antigo.
 
-Para o Auto Rejoin continuar por vários teleports, o executor precisa executar o
-bundle automaticamente. Como alternativa, preencha `SERVER_HOP.RELOAD_URL` em
-`Config.lua` com a URL raw do bundle; quando `queue_on_teleport` estiver disponível,
-o Hub enfileira essa URL antes de trocar.
+Quando o Hub é iniciado por `Loader.lua`, a URL raw já configurada no Loader é
+entregue ao Auto Rejoin. Se o executor oferecer `queue_on_teleport`, o Hub enfileira
+essa URL antes de trocar e a repassa novamente no servidor seguinte, permitindo
+vários hops consecutivos. Se o bundle for executado diretamente, use o auto-execute
+do executor ou preencha `SERVER_HOP.RELOAD_URL` em `Config.lua`.
+
+Ao recriar o Hub, são restaurados Auto Escape, Kill All, Auto Revive, Team ESP,
+Auto Loot, Auto Fugir, Remover FOV, todos os overrides de `Gamepasses`/`Settings`,
+a distância de fuga, o limite de nível e o próprio Auto Rejoin. Desmarcar uma opção
+salva `false`, portanto ela permanece desligada nos servidores seguintes.
 
 ## Estrutura
 
