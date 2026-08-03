@@ -1,0 +1,25 @@
+-- Loader remoto opcional. O bundle valida GAME_ID/PLACE_IDS antes de iniciar
+-- qualquer feature, UI ou acesso a objetos do jogo.
+
+local BUNDLE_URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/Distribution/GOATHubSTK.bundle.lua"
+
+if BUNDLE_URL:find("COLOQUE_AQUI", 1, true) then
+    warn("[GOATHubSTK] Configure BUNDLE_URL em Loader.lua ou execute o bundle local.")
+    return
+end
+
+local ok, source = pcall(function()
+    return game:HttpGet(BUNDLE_URL)
+end)
+if not ok then
+    warn("[GOATHubSTK] Falha ao baixar o bundle: " .. tostring(source))
+    return
+end
+
+local chunk, compileError = loadstring(source)
+if not chunk then
+    warn("[GOATHubSTK] Bundle invalido: " .. tostring(compileError))
+    return
+end
+
+return chunk()
