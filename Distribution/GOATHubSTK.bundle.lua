@@ -509,6 +509,14 @@ __factories["Core/StateStore"] = function()
         self:_save()
     end
 
+    function StateStore:remove(key)
+        if self.values[key] == nil then
+            return
+        end
+        self.values[key] = nil
+        self:_save()
+    end
+
     function StateStore:flush()
         self:_save()
     end
@@ -539,13 +547,33 @@ __factories["Features/AttributeOverrides"] = function()
             or Runtime.LocalPlayer:WaitForChild(containerName, 10)
     end
 
-    function AttributeOverrides:setOverride(containerName, attribute, enabled)
+    function AttributeOverrides:_restoreEntry(key, entry)
+        self.overrides[key] = nil
+        if entry.connection then
+            entry.connection:Disconnect()
+        end
+        if entry.container and entry.container.Parent then
+            entry.container:SetAttribute(entry.attribute, entry.original)
+        end
+    end
+
+    function AttributeOverrides:setOverride(containerName, attribute, enabled, owner)
         local key = self:_key(containerName, attribute)
         local existing = self.overrides[key]
+        owner = tostring(owner or "default")
 
         if enabled == true then
-            if not self.enabled or existing then
-                return existing ~= nil
+            if not self.enabled then
+                return false
+            end
+            if existing then
+                existing.owners[owner] = true
+                if existing.container:GetAttribute(attribute) ~= true then
+                    existing.writing = true
+                    existing.container:SetAttribute(attribute, true)
+                    existing.writing = false
+                end
+                return true
             end
 
             local container = self:_container(containerName)
@@ -558,6 +586,9 @@ __factories["Features/AttributeOverrides"] = function()
                 container = container,
                 attribute = attribute,
                 original = container:GetAttribute(attribute),
+                owners = {
+                    [owner] = true,
+                },
                 writing = false,
                 connection = nil,
             }
@@ -583,13 +614,11 @@ __factories["Features/AttributeOverrides"] = function()
         if not existing then
             return true
         end
-        self.overrides[key] = nil
-        if existing.connection then
-            existing.connection:Disconnect()
+        existing.owners[owner] = nil
+        if next(existing.owners) ~= nil then
+            return true
         end
-        if existing.container and existing.container.Parent then
-            existing.container:SetAttribute(existing.attribute, existing.original)
-        end
+        self:_restoreEntry(key, existing)
         self.onStatus(containerName .. "." .. attribute .. " restaurado")
         return true
     end
@@ -602,7 +631,7 @@ __factories["Features/AttributeOverrides"] = function()
         for _, key in ipairs(keys) do
             local entry = self.overrides[key]
             if entry then
-                self:setOverride(entry.container.Name, entry.attribute, false)
+                self:_restoreEntry(key, entry)
             end
         end
     end
@@ -1056,6 +1085,8 @@ __factories["Features/AutoRevive"] = function()
             generation = 0,
             dangerDistance = Config.DISTANCES.KILLER_EVADE,
             lastTarget = nil,
+            rescueTarget = nil,
+            returnCFrame = nil,
         }, AutoRevive)
     end
 
@@ -1147,16 +1178,92 @@ __factories["Features/AutoRevive"] = function()
         self.movement:move(OWNER, destination)
     end
 
+    function AutoRevive:_beginRescue(target)
+        local character = Runtime.getCharacter()
+        if not character then
+            return false
+        end
+        self.rescueTarget = target
+        self.returnCFrame = character:GetPivot()
+        return true
+    end
+
+    function AutoRevive:_finishRescue(message)
+        local destination = self.returnCFrame
+        self.rescueTarget = nil
+        self.returnCFrame = nil
+        self.lastTarget = nil
+        self.movement:stopOwner(OWNER)
+
+        if destination
+            and Runtime.isSurvivor()
+            and Runtime.isAlive()
+            and not Runtime.isDowned()
+            and not Runtime.isEscaped()
+        then
+            if self.movement:move(OWNER, destination) then
+                self.onStatus(message or "Auto Revive: voltando ao ponto anterior")
+                return
+            end
+        end
+        self.onStatus("Auto Revive: aguardando alvo seguro")
+    end
+
+    function AutoRevive:_rescueStillSafe(target)
+        if target.Parent ~= Runtime.Players
+            or not Runtime.isSurvivor(target)
+            or not Runtime.isAlive(target)
+            or Runtime.isEscaped(target)
+            or target:GetAttribute("HeldByPlayer")
+        then
+            return false
+        end
+        local targetRoot = Runtime.getRoot(target)
+        return targetRoot ~= nil
+            and self:_nearestKillerDistance(targetRoot.Position) >= self.dangerDistance * 0.75
+    end
+
     function AutoRevive:_loop(generation)
         while self.enabled and self.generation == generation do
             if not Runtime.isSurvivor() or not Runtime.isAlive() then
                 self.lastTarget = nil
+                self.rescueTarget = nil
+                self.returnCFrame = nil
                 task.wait(0.20)
                 continue
             end
 
             local rescuingSelf = Runtime.isDowned()
-            local target = rescuingSelf and self:_targetForSelf() or self:_targetToRevive()
+            if rescuingSelf and self.rescueTarget then
+                self.rescueTarget = nil
+                self.returnCFrame = nil
+                self.lastTarget = nil
+            end
+
+            if not rescuingSelf and self.rescueTarget then
+                if not Runtime.isDowned(self.rescueTarget) then
+                    self:_finishRescue("Auto Revive: jogador salvo; voltando ao ponto anterior")
+                    task.wait(Config.TIMING.REVIVE_FOLLOW)
+                    continue
+                end
+                if not self:_rescueStillSafe(self.rescueTarget) then
+                    self:_finishRescue("Auto Revive: resgate cancelado; voltando ao ponto anterior")
+                    task.wait(Config.TIMING.REVIVE_FOLLOW)
+                    continue
+                end
+            end
+
+            local target
+            if rescuingSelf then
+                target = self:_targetForSelf()
+            elseif self.rescueTarget then
+                target = self.rescueTarget
+            else
+                target = self:_targetToRevive()
+                if target and not self:_beginRescue(target) then
+                    target = nil
+                end
+            end
             if target then
                 if self.lastTarget ~= target then
                     self.lastTarget = target
@@ -1188,8 +1295,12 @@ __factories["Features/AutoRevive"] = function()
                 self:_loop(generation)
             end)
         else
-            self.movement:stopOwner(OWNER)
-            self.onStatus("Auto Revive: OFF")
+            if self.rescueTarget or self.returnCFrame then
+                self:_finishRescue("Auto Revive: OFF; voltando ao ponto anterior")
+            else
+                self.movement:stopOwner(OWNER)
+                self.onStatus("Auto Revive: OFF")
+            end
         end
     end
 
@@ -1955,6 +2066,7 @@ end
 
 __factories["Providers/MapProvider"] = function()
     local CollectionService = game:GetService("CollectionService")
+    local PathfindingService = game:GetService("PathfindingService")
     local Workspace = game:GetService("Workspace")
 
     local Runtime = __require("Core/Runtime")
@@ -1971,13 +2083,23 @@ __factories["Providers/MapProvider"] = function()
         ExitEffect = true,
     }
 
-    local EXCLUDED_NAMES = {
-        Trigger = true,
-        Collider = true,
-        Ceiling = true,
-        Roof = true,
-        Wall = true,
+    local EXCLUDED_TERMS = {
+        "trigger",
+        "collider",
+        "ceiling",
+        "roof",
+        "wall",
+        "barrier",
+        "boundary",
+        "bounds",
+        "kill",
+        "void",
+        "invisible",
+        "blocker",
+        "border",
     }
+
+    local MAX_PATH_CANDIDATES = 12
 
     local function hasTaggedAncestor(instance, tag, boundary)
         local current = instance
@@ -2001,14 +2123,31 @@ __factories["Providers/MapProvider"] = function()
         return false
     end
 
+    local function hasExcludedIdentity(instance, boundary)
+        local current = instance
+        while current do
+            local name = string.lower(current.Name)
+            for _, term in ipairs(EXCLUDED_TERMS) do
+                if string.find(name, term, 1, true) then
+                    return true
+                end
+            end
+            if current == boundary then
+                break
+            end
+            current = current.Parent
+        end
+        return false
+    end
+
     local function isWalkablePart(part, map)
         if not part:IsA("BasePart") or not part.Anchored or not part.CanCollide then
             return false
         end
-        if part.Transparency >= 0.95 or part.Size.X < 6 or part.Size.Z < 6 then
+        if part.Transparency >= 0.75 or part.Size.X < 6 or part.Size.Z < 6 then
             return false
         end
-        if part.CFrame.UpVector.Y < 0.78 or EXCLUDED_NAMES[part.Name] then
+        if part.CFrame.UpVector.Y < 0.78 or hasExcludedIdentity(part, map) then
             return false
         end
         if hasExcludedAncestor(part, map) then
@@ -2018,6 +2157,14 @@ __factories["Providers/MapProvider"] = function()
             return false
         end
         return true
+    end
+
+    local function raycastParamsFor(map)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Whitelist
+        params.FilterDescendantsInstances = { map }
+        params.IgnoreWater = true
+        return params
     end
 
     function MapProvider.new()
@@ -2115,6 +2262,38 @@ __factories["Providers/MapProvider"] = function()
         return LootVisibility.isAvailable(instance)
     end
 
+    function MapProvider:_pathStaysInsideMap(currentPosition, destination, map, raycastParams)
+        local path = PathfindingService:CreatePath({
+            AgentRadius = 2,
+            AgentHeight = 5,
+            AgentCanJump = true,
+            AgentCanClimb = false,
+            WaypointSpacing = 4,
+        })
+        local computed = pcall(function()
+            path:ComputeAsync(currentPosition, destination)
+        end)
+        if not computed or path.Status ~= Enum.PathStatus.Success then
+            return false
+        end
+
+        local waypoints = path:GetWaypoints()
+        if #waypoints == 0 or (waypoints[#waypoints].Position - destination).Magnitude > 8 then
+            return false
+        end
+        for _, waypoint in ipairs(waypoints) do
+            local support = Workspace:Raycast(
+                waypoint.Position + Vector3.new(0, 3, 0),
+                Vector3.new(0, -14, 0),
+                raycastParams
+            )
+            if not support or not support.Instance:IsDescendantOf(map) then
+                return false
+            end
+        end
+        return true
+    end
+
     function MapProvider:findSafeCFrame(killerRoots, currentPosition, minimumTravel)
         self:_buildCandidates()
         local map = self:getMap()
@@ -2122,13 +2301,8 @@ __factories["Providers/MapProvider"] = function()
             return nil
         end
 
-        local raycastParams = RaycastParams.new()
-        raycastParams.FilterType = Enum.RaycastFilterType.Whitelist
-        raycastParams.FilterDescendantsInstances = { map }
-        raycastParams.IgnoreWater = true
-
-        local bestCFrame = nil
-        local bestScore = -math.huge
+        local raycastParams = raycastParamsFor(map)
+        local scored = {}
         local candidateCount = #self.candidates
         if candidateCount == 0 then
             return nil
@@ -2142,10 +2316,19 @@ __factories["Providers/MapProvider"] = function()
             if part.Parent and part:IsDescendantOf(map) and isWalkablePart(part, map) then
                 local top = part.Position + part.CFrame.UpVector * (part.Size.Y / 2 + 8)
                 local hit = Workspace:Raycast(top, Vector3.new(0, -28, 0), raycastParams)
-                if hit and hit.Instance and hit.Normal.Y >= 0.62 then
+                if hit
+                    and hit.Instance
+                    and hit.Normal.Y >= 0.62
+                    and isWalkablePart(hit.Instance, map)
+                then
                     local position = hit.Position + Vector3.new(0, 3.2, 0)
                     local travel = (position - currentPosition).Magnitude
-                    if travel >= minimumTravel then
+                    local blockedAbove = Workspace:Raycast(
+                        hit.Position + Vector3.new(0, 0.4, 0),
+                        Vector3.new(0, 6, 0),
+                        raycastParams
+                    )
+                    if travel >= minimumTravel and not blockedAbove then
                         local nearestKiller = math.huge
                         for _, killerRoot in ipairs(killerRoots) do
                             if killerRoot and killerRoot.Parent then
@@ -2154,16 +2337,25 @@ __factories["Providers/MapProvider"] = function()
                         end
 
                         local score = nearestKiller + math.min(travel, 80) * 0.15
-                        if score > bestScore then
-                            bestScore = score
-                            bestCFrame = CFrame.new(position)
-                        end
+                        table.insert(scored, {
+                            score = score,
+                            position = position,
+                        })
                     end
                 end
             end
         end
 
-        return bestCFrame
+        table.sort(scored, function(first, second)
+            return first.score > second.score
+        end)
+        for index = 1, math.min(#scored, MAX_PATH_CANDIDATES) do
+            local candidate = scored[index]
+            if self:_pathStaysInsideMap(currentPosition, candidate.position, map, raycastParams) then
+                return CFrame.new(candidate.position)
+            end
+        end
+        return nil
     end
 
     function MapProvider:Destroy()
@@ -2222,6 +2414,28 @@ __factories["UI/Layout"] = function()
         local maxX = viewport.X - padding - halfWidth
         local minY = padding + halfHeight
         local maxY = viewport.Y - padding - halfHeight
+
+        if minX > maxX then
+            centerX = viewport.X / 2
+        else
+            centerX = math.clamp(centerX, minX, maxX)
+        end
+        if minY > maxY then
+            centerY = viewport.Y / 2
+        else
+            centerY = math.clamp(centerY, minY, maxY)
+        end
+        return centerX, centerY
+    end
+
+    function Layout.clampDragCenter(centerX, centerY, width, height, viewport, padding, headerHeight)
+        local halfWidth = width / 2
+        local halfHeight = height / 2
+        local visibleWidth = math.min(width, 112)
+        local minX = padding + visibleWidth - halfWidth
+        local maxX = viewport.X - padding - visibleWidth + halfWidth
+        local minY = padding + halfHeight
+        local maxY = viewport.Y - padding - headerHeight + halfHeight
 
         if minX > maxX then
             centerX = viewport.X / 2
@@ -2303,8 +2517,9 @@ __factories["UI/UI"] = function()
             cameraConnection = nil,
             destroyed = false,
             closeCallback = nil,
+            collapsed = false,
             dragState = "idle",
-            dragPress = nil,
+            dragKind = nil,
             dragInput = nil,
             dragStart = nil,
             startCenter = nil,
@@ -2337,7 +2552,7 @@ __factories["UI/UI"] = function()
 
         local dragHandle = Instance.new("TextButton")
         dragHandle.Name = "DragHandle"
-        dragHandle.Size = UDim2.new(1, -46, 1, 0)
+        dragHandle.Size = UDim2.new(1, -84, 1, 0)
         dragHandle.BackgroundTransparency = 1
         dragHandle.Text = "  " .. (title or Config.UI.TITLE)
         dragHandle.TextColor3 = COLORS.text
@@ -2347,6 +2562,20 @@ __factories["UI/UI"] = function()
         dragHandle.AutoButtonColor = false
         dragHandle.Parent = topBar
         self.dragHandle = dragHandle
+
+        local minimizeButton = Instance.new("TextButton")
+        minimizeButton.Name = "Minimize"
+        minimizeButton.AnchorPoint = Vector2.new(1, 0.5)
+        minimizeButton.Position = UDim2.new(1, -43, 0.5, 0)
+        minimizeButton.Size = UDim2.fromOffset(32, 28)
+        minimizeButton.BackgroundColor3 = COLORS.card
+        minimizeButton.Text = "–"
+        minimizeButton.TextColor3 = COLORS.text
+        minimizeButton.Font = Enum.Font.GothamBold
+        minimizeButton.TextSize = 19
+        minimizeButton.Parent = topBar
+        corner(minimizeButton, 7)
+        self.minimizeButton = minimizeButton
 
         local closeButton = Instance.new("TextButton")
         closeButton.Name = "Close"
@@ -2397,23 +2626,37 @@ __factories["UI/UI"] = function()
             end
             local viewport = currentViewport()
             local calculated = Layout.calculate(viewport, Config.UI)
+            local effectiveHeight = self.collapsed and calculated.headerHeight or calculated.height
             local centerX = resetCenter and calculated.centerX or self.frame.Position.X.Offset
             local centerY = resetCenter and calculated.centerY or self.frame.Position.Y.Offset
-            centerX, centerY = Layout.clampCenter(
-                centerX,
-                centerY,
-                calculated.width,
-                calculated.height,
-                viewport,
-                calculated.padding
-            )
+            if resetCenter and not self.collapsed then
+                centerX, centerY = Layout.clampCenter(
+                    centerX,
+                    centerY,
+                    calculated.width,
+                    effectiveHeight,
+                    viewport,
+                    calculated.padding
+                )
+            else
+                centerX, centerY = Layout.clampDragCenter(
+                    centerX,
+                    centerY,
+                    calculated.width,
+                    effectiveHeight,
+                    viewport,
+                    calculated.padding,
+                    calculated.headerHeight
+                )
+            end
 
             self.layout = calculated
-            self.frame.Size = UDim2.fromOffset(calculated.width, calculated.height)
+            self.frame.Size = UDim2.fromOffset(calculated.width, effectiveHeight)
             self.frame.Position = UDim2.fromOffset(centerX, centerY)
             self.topBar.Size = UDim2.new(1, 0, 0, calculated.headerHeight)
             self.content.Position = UDim2.fromOffset(0, calculated.headerHeight)
             self.content.Size = UDim2.new(1, 0, 1, -calculated.headerHeight)
+            self.content.Visible = not self.collapsed
         end
 
         function self:_bindCamera()
@@ -2431,11 +2674,14 @@ __factories["UI/UI"] = function()
         end
 
         local function finishDrag(input)
-            if self.dragPress ~= input and self.dragInput ~= input then
+            local finishedMouse = self.dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseButton1
+            local finishedTouch = self.dragKind == "touch" and input == self.dragInput
+            if not finishedMouse and not finishedTouch then
                 return
             end
             self.dragState = "idle"
-            self.dragPress = nil
+            self.dragKind = nil
             self.dragInput = nil
             self.dragStart = nil
             self.startCenter = nil
@@ -2448,20 +2694,17 @@ __factories["UI/UI"] = function()
                 return
             end
             self.dragState = "pressed"
-            self.dragPress = input
-            self.dragInput = input.UserInputType == Enum.UserInputType.Touch and input or nil
+            self.dragKind = input.UserInputType == Enum.UserInputType.Touch and "touch" or "mouse"
+            self.dragInput = self.dragKind == "touch" and input or nil
             self.dragStart = input.Position
             self.startCenter = Vector2.new(frame.Position.X.Offset, frame.Position.Y.Offset)
         end))
 
-        table.insert(self.connections, dragHandle.InputChanged:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseMovement then
-                self.dragInput = input
-            end
-        end))
-
         table.insert(self.connections, UserInputService.InputChanged:Connect(function(input)
-            if self.dragState == "idle" or input ~= self.dragInput then
+            local movingMouse = self.dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseMovement
+            local movingTouch = self.dragKind == "touch" and input == self.dragInput
+            if self.dragState == "idle" or (not movingMouse and not movingTouch) then
                 return
             end
             local delta = input.Position - self.dragStart
@@ -2473,13 +2716,15 @@ __factories["UI/UI"] = function()
             end
 
             local viewport = currentViewport()
-            local x, y = Layout.clampCenter(
+            local effectiveHeight = self.collapsed and self.layout.headerHeight or self.layout.height
+            local x, y = Layout.clampDragCenter(
                 self.startCenter.X + delta.X,
                 self.startCenter.Y + delta.Y,
                 self.layout.width,
-                self.layout.height,
+                effectiveHeight,
                 viewport,
-                self.layout.padding
+                self.layout.padding,
+                self.layout.headerHeight
             )
             frame.Position = UDim2.fromOffset(x, y)
         end))
@@ -2493,6 +2738,18 @@ __factories["UI/UI"] = function()
                 self.closeCallback()
             end
         end))
+        table.insert(self.connections, minimizeButton.Activated:Connect(function()
+            local currentHeight = self.frame.Size.Y.Offset
+            local top = self.frame.Position.Y.Offset - currentHeight / 2
+            self.collapsed = not self.collapsed
+            minimizeButton.Text = self.collapsed and "+" or "–"
+            local nextHeight = self.collapsed and self.layout.headerHeight or self.layout.height
+            self.frame.Position = UDim2.fromOffset(
+                self.frame.Position.X.Offset,
+                top + nextHeight / 2
+            )
+            self:_applyLayout(false)
+        end))
 
         function self:setCloseCallback(callback)
             self.closeCallback = callback
@@ -2504,7 +2761,7 @@ __factories["UI/UI"] = function()
             end
             self.destroyed = true
             self.dragState = "idle"
-            self.dragPress = nil
+            self.dragKind = nil
             self.dragInput = nil
             if self.cameraConnection then
                 self.cameraConnection:Disconnect()
@@ -2738,6 +2995,32 @@ __factories["init"] = function()
             return initial
         end
 
+        local legacyUnlockAll = false
+        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
+            legacyUnlockAll = legacyUnlockAll
+                or stateStore:getBoolean("attribute.Gamepasses." .. attribute, false)
+        end
+        local legacyDoubleJump = stateStore:getBoolean("attribute.Gamepasses.DoubleJump", false)
+            or stateStore:getBoolean("attribute.Settings.double_jump", false)
+        local legacyKillerChance = stateStore:getBoolean("attribute.Gamepasses.IncreasedKillerChange", false)
+            or stateStore:getBoolean("attribute.Settings.killer_chance_3x", false)
+
+        if not stateStore:has("feature.unlockAllGamepasses") then
+            stateStore:setBoolean("feature.unlockAllGamepasses", legacyUnlockAll)
+        end
+        if not stateStore:has("feature.doubleJump") then
+            stateStore:setBoolean("feature.doubleJump", legacyDoubleJump)
+        end
+        if not stateStore:has("feature.killerChance3x") then
+            stateStore:setBoolean("feature.killerChance3x", legacyKillerChance)
+        end
+        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
+            stateStore:remove("attribute.Gamepasses." .. attribute)
+        end
+        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.SETTINGS) do
+            stateStore:remove("attribute.Settings." .. attribute)
+        end
+
         local autoEscape = AutoEscape.new(movement, mapProvider, setStatus)
         local killAll = KillAll.new(movement, setStatus)
         local autoRevive = AutoRevive.new(movement, setStatus)
@@ -2808,21 +3091,20 @@ __factories["init"] = function()
             autoEvade:setEnabled(enabled)
         end)
 
-        contentItem(UI.section(content, "GAMEPASSES LOCAIS"))
-        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
-            local attributeName = attribute
-            persistentCheckbox(attributeName, "attribute.Gamepasses." .. attributeName, function(enabled)
-                attributeOverrides:setOverride("Gamepasses", attributeName, enabled)
-            end)
-        end
-
-        contentItem(UI.section(content, "SETTINGS LOCAIS"))
-        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.SETTINGS) do
-            local attributeName = attribute
-            persistentCheckbox(attributeName, "attribute.Settings." .. attributeName, function(enabled)
-                attributeOverrides:setOverride("Settings", attributeName, enabled)
-            end)
-        end
+        contentItem(UI.section(content, "DESBLOQUEIOS LOCAIS"))
+        persistentCheckbox("Unlock All Gamepasses", "feature.unlockAllGamepasses", function(enabled)
+            for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
+                attributeOverrides:setOverride("Gamepasses", attribute, enabled, "unlockAllGamepasses")
+            end
+        end)
+        persistentCheckbox("Pulo Duplo 2x", "feature.doubleJump", function(enabled)
+            attributeOverrides:setOverride("Gamepasses", "DoubleJump", enabled, "doubleJump")
+            attributeOverrides:setOverride("Settings", "double_jump", enabled, "doubleJump")
+        end)
+        persistentCheckbox("Chance de Killer 3x", "feature.killerChance3x", function(enabled)
+            attributeOverrides:setOverride("Gamepasses", "IncreasedKillerChange", enabled, "killerChance3x")
+            attributeOverrides:setOverride("Settings", "killer_chance_3x", enabled, "killerChance3x")
+        end)
 
         contentItem(UI.section(content, "CAMERA"))
         persistentCheckbox("Remover mudancas de FOV (fixar 70)", "feature.fovOverride", function(enabled)
