@@ -28,6 +28,44 @@ local __config = (function()
             MIN_SAFE_TRAVEL = 24,
         }),
 
+        ATTRIBUTE_OVERRIDES = table.freeze({
+            GAMEPASSES = table.freeze({
+                "DoubleJump",
+                "DreadGamepass",
+                "IncreasedKillerChange",
+                "KringlerGamepass",
+                "LayfaAshwellGamepass",
+                "MalvusGamepass",
+                "MrRisusGamepass",
+                "PapaRoni",
+                "SearingGuardGamepass",
+                "StarterPack",
+                "TradingVIP",
+                "VIP",
+                "VoldarGamepass",
+            }),
+            SETTINGS = table.freeze({
+                "double_jump",
+                "killer_chance_3x",
+            }),
+        }),
+
+        CAMERA = table.freeze({
+            DEFAULT_FOV = 70,
+        }),
+
+        SERVER_HOP = table.freeze({
+            DEFAULT_LEVEL_LIMIT = 40,
+            MIN_LEVEL_LIMIT = 1,
+            MAX_LEVEL_LIMIT = 9999,
+            MAX_VISITED_SERVERS = 10,
+            MAX_SERVER_PAGES = 5,
+            LEVEL_WAIT = 10,
+            POLL = 1,
+            RETRY_DELAY = 5,
+            RELOAD_URL = "",
+        }),
+
         TIMING = table.freeze({
             ESCAPE_POLL = 0.15,
             ESCAPE_DRAG_STEP = 0.06,
@@ -279,6 +317,191 @@ __factories["Core/Runtime"] = function()
     end
 
     return Runtime
+end
+
+__factories["Core/ServerHopPolicy"] = function()
+    local ServerHopPolicy = {}
+
+    function ServerHopPolicy.parseLevel(value)
+        if typeof(value) == "number" then
+            return math.max(0, math.floor(value))
+        end
+        if typeof(value) == "string" then
+            local digits = string.match(value, "%d+")
+            return digits and tonumber(digits) or nil
+        end
+        return nil
+    end
+
+    function ServerHopPolicy.pushVisited(history, jobId, limit)
+        if typeof(jobId) ~= "string" or jobId == "" then
+            return history
+        end
+        for index = #history, 1, -1 do
+            if history[index] == jobId then
+                table.remove(history, index)
+            end
+        end
+        table.insert(history, jobId)
+        while #history > limit do
+            table.remove(history, 1)
+        end
+        return history
+    end
+
+    function ServerHopPolicy.isVisited(history, jobId)
+        for _, visitedId in ipairs(history) do
+            if visitedId == jobId then
+                return true
+            end
+        end
+        return false
+    end
+
+    function ServerHopPolicy.shouldHop(totalPlayers, otherLevels, levelLimit, hasUnknown)
+        if totalPlayers <= 1 then
+            return true, "sozinho no servidor"
+        end
+        for playerName, level in pairs(otherLevels) do
+            if level >= levelLimit then
+                return true, string.format("%s esta no nivel %d", playerName, level)
+            end
+        end
+        if hasUnknown then
+            return true, "nivel de outro jogador nao identificado"
+        end
+        return false, nil
+    end
+
+    function ServerHopPolicy.eligibleServers(servers, currentJobId, history)
+        local result = {}
+        for _, server in ipairs(servers) do
+            local id = server.id
+            local playing = tonumber(server.playing) or 0
+            local maxPlayers = tonumber(server.maxPlayers) or 0
+            if typeof(id) == "string"
+                and id ~= ""
+                and id ~= currentJobId
+                and not ServerHopPolicy.isVisited(history, id)
+                and playing > 0
+                and playing < maxPlayers
+            then
+                table.insert(result, server)
+            end
+        end
+        return result
+    end
+
+    return ServerHopPolicy
+end
+
+__factories["Features/AttributeOverrides"] = function()
+    local Runtime = __require("Core/Runtime")
+
+    local AttributeOverrides = {}
+    AttributeOverrides.__index = AttributeOverrides
+
+    function AttributeOverrides.new(onStatus)
+        return setmetatable({
+            onStatus = onStatus or function() end,
+            enabled = true,
+            overrides = {},
+        }, AttributeOverrides)
+    end
+
+    function AttributeOverrides:_key(containerName, attribute)
+        return containerName .. "\0" .. attribute
+    end
+
+    function AttributeOverrides:_container(containerName)
+        return Runtime.LocalPlayer:FindFirstChild(containerName)
+            or Runtime.LocalPlayer:WaitForChild(containerName, 10)
+    end
+
+    function AttributeOverrides:setOverride(containerName, attribute, enabled)
+        local key = self:_key(containerName, attribute)
+        local existing = self.overrides[key]
+
+        if enabled == true then
+            if not self.enabled or existing then
+                return existing ~= nil
+            end
+
+            local container = self:_container(containerName)
+            if not container then
+                self.onStatus("Atributos: " .. containerName .. " nao encontrado")
+                return false
+            end
+
+            local entry = {
+                container = container,
+                attribute = attribute,
+                original = container:GetAttribute(attribute),
+                writing = false,
+                connection = nil,
+            }
+            self.overrides[key] = entry
+            entry.connection = container:GetAttributeChangedSignal(attribute):Connect(function()
+                if self.overrides[key] ~= entry or entry.writing then
+                    return
+                end
+                if container:GetAttribute(attribute) ~= true then
+                    entry.writing = true
+                    container:SetAttribute(attribute, true)
+                    entry.writing = false
+                end
+            end)
+
+            entry.writing = true
+            container:SetAttribute(attribute, true)
+            entry.writing = false
+            self.onStatus(containerName .. "." .. attribute .. " = true (local)")
+            return true
+        end
+
+        if not existing then
+            return true
+        end
+        self.overrides[key] = nil
+        if existing.connection then
+            existing.connection:Disconnect()
+        end
+        if existing.container and existing.container.Parent then
+            existing.container:SetAttribute(existing.attribute, existing.original)
+        end
+        self.onStatus(containerName .. "." .. attribute .. " restaurado")
+        return true
+    end
+
+    function AttributeOverrides:_restoreAll()
+        local keys = {}
+        for key in pairs(self.overrides) do
+            table.insert(keys, key)
+        end
+        for _, key in ipairs(keys) do
+            local entry = self.overrides[key]
+            if entry then
+                self:setOverride(entry.container.Name, entry.attribute, false)
+            end
+        end
+    end
+
+    function AttributeOverrides:setEnabled(enabled)
+        self.enabled = enabled == true
+        if not self.enabled then
+            self:_restoreAll()
+        end
+    end
+
+    function AttributeOverrides:stop()
+        self:setEnabled(false)
+    end
+
+    function AttributeOverrides:Destroy()
+        self:stop()
+    end
+
+    return AttributeOverrides
 end
 
 __factories["Features/AutoEscape"] = function()
@@ -858,6 +1081,473 @@ __factories["Features/AutoRevive"] = function()
     end
 
     return AutoRevive
+end
+
+__factories["Features/AutoServerHop"] = function()
+    local HttpService = game:GetService("HttpService")
+    local Players = game:GetService("Players")
+    local TeleportService = game:GetService("TeleportService")
+
+    local Config = __require("Config")
+    local ServerHopPolicy = __require("Core/ServerHopPolicy")
+
+    local AutoServerHop = {}
+    AutoServerHop.__index = AutoServerHop
+
+    local VISITED_KEY = "GOATHubSTK_VisitedServers"
+    local ENABLED_KEY = "GOATHubSTK_AutoServerHop"
+    local LEVEL_KEY = "GOATHubSTK_LevelLimit"
+
+    local function getQueueFunction()
+        if typeof(queue_on_teleport) == "function" then
+            return queue_on_teleport
+        end
+        if typeof(syn) == "table" and typeof(syn.queue_on_teleport) == "function" then
+            return syn.queue_on_teleport
+        end
+        return nil
+    end
+
+    function AutoServerHop.new(onStatus)
+        local self = setmetatable({
+            onStatus = onStatus or function() end,
+            enabled = false,
+            generation = 0,
+            hopping = false,
+            wake = false,
+            nextAttempt = 0,
+            connections = {},
+            playerConnections = {},
+            lastStatus = "",
+            visited = {},
+            levelLimit = Config.SERVER_HOP.DEFAULT_LEVEL_LIMIT,
+            resumeRequested = false,
+        }, AutoServerHop)
+
+        local savedVisited = self:_getTeleportSetting(VISITED_KEY)
+        if typeof(savedVisited) == "table" then
+            for _, jobId in ipairs(savedVisited) do
+                if typeof(jobId) == "string" and jobId ~= "" then
+                    ServerHopPolicy.pushVisited(
+                        self.visited,
+                        jobId,
+                        Config.SERVER_HOP.MAX_VISITED_SERVERS
+                    )
+                end
+            end
+        end
+
+        local savedLevel = tonumber(self:_getTeleportSetting(LEVEL_KEY))
+        if savedLevel then
+            self.levelLimit = math.clamp(
+                math.floor(savedLevel + 0.5),
+                Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+                Config.SERVER_HOP.MAX_LEVEL_LIMIT
+            )
+        end
+        self.resumeRequested = self:_getTeleportSetting(ENABLED_KEY) == true
+        return self
+    end
+
+    function AutoServerHop:_status(message)
+        if self.lastStatus ~= message then
+            self.lastStatus = message
+            self.onStatus(message)
+        end
+    end
+
+    function AutoServerHop:_getTeleportSetting(key)
+        local ok, value = pcall(function()
+            return TeleportService:GetTeleportSetting(key)
+        end)
+        return ok and value or nil
+    end
+
+    function AutoServerHop:_setTeleportSetting(key, value)
+        pcall(function()
+            TeleportService:SetTeleportSetting(key, value)
+        end)
+    end
+
+    function AutoServerHop:_saveState()
+        self:_setTeleportSetting(VISITED_KEY, self.visited)
+        self:_setTeleportSetting(LEVEL_KEY, self.levelLimit)
+        self:_setTeleportSetting(ENABLED_KEY, self.enabled)
+    end
+
+    function AutoServerHop:_remember(jobId)
+        ServerHopPolicy.pushVisited(
+            self.visited,
+            jobId,
+            Config.SERVER_HOP.MAX_VISITED_SERVERS
+        )
+        self:_setTeleportSetting(VISITED_KEY, self.visited)
+    end
+
+    function AutoServerHop:shouldResume()
+        return self.resumeRequested
+    end
+
+    function AutoServerHop:getLevelLimit()
+        return self.levelLimit
+    end
+
+    function AutoServerHop:setLevelLimit(level)
+        self.levelLimit = math.clamp(
+            math.floor((tonumber(level) or self.levelLimit) + 0.5),
+            Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+            Config.SERVER_HOP.MAX_LEVEL_LIMIT
+        )
+        self:_setTeleportSetting(LEVEL_KEY, self.levelLimit)
+        self.wake = true
+        self:_status("Auto Rejoin: limite ajustado para " .. tostring(self.levelLimit))
+    end
+
+    function AutoServerHop:_readGuiLevel(player)
+        local playerGui = Players.LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local menus = playerGui and playerGui:FindFirstChild("Menus")
+        local playerList = menus and menus:FindFirstChild("PlayerList")
+        local portraits = playerList and playerList:FindFirstChild("Portraits")
+        local portrait = portraits and portraits:FindFirstChild(player.Name)
+        local rankBadge = portrait and portrait:FindFirstChild("RankBadge")
+        local levelLabel = rankBadge and rankBadge:FindFirstChild("Level")
+        return levelLabel and ServerHopPolicy.parseLevel(levelLabel.Text) or nil
+    end
+
+    function AutoServerHop:_readLevel(player)
+        if player == Players.LocalPlayer then
+            return nil
+        end
+        return ServerHopPolicy.parseLevel(player:GetAttribute("Level"))
+            or self:_readGuiLevel(player)
+    end
+
+    function AutoServerHop:_audit(generation)
+        local deadline = os.clock() + Config.SERVER_HOP.LEVEL_WAIT
+        while self.enabled and self.generation == generation and not self.hopping do
+            local currentPlayers = Players:GetPlayers()
+            local otherLevels = {}
+            local hasUnknown = false
+
+            for _, player in ipairs(currentPlayers) do
+                if player ~= Players.LocalPlayer then
+                    local level = self:_readLevel(player)
+                    if level == nil then
+                        hasUnknown = true
+                    else
+                        otherLevels[player.Name] = level
+                    end
+                end
+            end
+
+            local shouldHop, reason = ServerHopPolicy.shouldHop(
+                #currentPlayers,
+                otherLevels,
+                self.levelLimit,
+                false
+            )
+            if shouldHop then
+                self:_hop(reason)
+                return
+            end
+            if not hasUnknown then
+                self:_status("Auto Rejoin: servidor aprovado; outros jogadores abaixo de " .. tostring(self.levelLimit))
+                return
+            end
+            if os.clock() >= deadline then
+                local strictHop, strictReason = ServerHopPolicy.shouldHop(
+                    #currentPlayers,
+                    otherLevels,
+                    self.levelLimit,
+                    true
+                )
+                if strictHop then
+                    self:_hop(strictReason)
+                end
+                return
+            end
+            task.wait(0.15)
+        end
+    end
+
+    function AutoServerHop:_fetchServers()
+        local servers = {}
+        local cursor = nil
+
+        for _ = 1, Config.SERVER_HOP.MAX_SERVER_PAGES do
+            local url = string.format(
+                "https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Desc&limit=100",
+                game.PlaceId
+            )
+            if cursor then
+                url ..= "&cursor=" .. HttpService:UrlEncode(cursor)
+            end
+
+            local ok, decoded = pcall(function()
+                return HttpService:JSONDecode(game:HttpGet(url))
+            end)
+            if not ok or typeof(decoded) ~= "table" then
+                return nil, tostring(decoded)
+            end
+
+            if typeof(decoded.data) == "table" then
+                for _, server in ipairs(decoded.data) do
+                    table.insert(servers, server)
+                end
+            end
+            cursor = decoded.nextPageCursor
+            if typeof(cursor) ~= "string" or cursor == "" then
+                break
+            end
+        end
+        return servers, nil
+    end
+
+    function AutoServerHop:_queueReload()
+        local url = Config.SERVER_HOP.RELOAD_URL
+        local queue = getQueueFunction()
+        if not queue or typeof(url) ~= "string" or url == "" then
+            return false
+        end
+
+        local source = string.format("loadstring(game:HttpGet(%q))()", url)
+        return pcall(queue, source)
+    end
+
+    function AutoServerHop:_hop(reason)
+        if self.hopping or os.clock() < self.nextAttempt then
+            return
+        end
+        self.hopping = true
+        self:_status("Auto Rejoin: procurando outro servidor — " .. tostring(reason))
+        self:_remember(game.JobId)
+
+        local servers, fetchError = self:_fetchServers()
+        if not servers then
+            self.hopping = false
+            self.nextAttempt = os.clock() + Config.SERVER_HOP.RETRY_DELAY
+            self:_status("Auto Rejoin: falha ao listar servidores — " .. tostring(fetchError))
+            return
+        end
+
+        local candidates = ServerHopPolicy.eligibleServers(servers, game.JobId, self.visited)
+        if #candidates == 0 then
+            self.hopping = false
+            self.nextAttempt = os.clock() + Config.SERVER_HOP.RETRY_DELAY
+            self:_status("Auto Rejoin: nenhum servidor publico diferente disponivel")
+            return
+        end
+
+        local selected = candidates[math.random(1, #candidates)]
+        self:_remember(selected.id)
+        self:_saveState()
+        self:_queueReload()
+        self:_status(string.format(
+            "Auto Rejoin: entrando em %s (%d/%d jogadores)",
+            selected.id,
+            tonumber(selected.playing) or 0,
+            tonumber(selected.maxPlayers) or 0
+        ))
+
+        local ok, teleportError = pcall(function()
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, selected.id, Players.LocalPlayer)
+        end)
+        if not ok then
+            self.hopping = false
+            self.nextAttempt = os.clock() + Config.SERVER_HOP.RETRY_DELAY
+            self:_status("Auto Rejoin: teleport falhou — " .. tostring(teleportError))
+        end
+    end
+
+    function AutoServerHop:_watchPlayer(player)
+        if player == Players.LocalPlayer or self.playerConnections[player] then
+            return
+        end
+        self.playerConnections[player] = player:GetAttributeChangedSignal("Level"):Connect(function()
+            self.wake = true
+        end)
+    end
+
+    function AutoServerHop:_unwatchPlayer(player)
+        local connection = self.playerConnections[player]
+        if connection then
+            connection:Disconnect()
+            self.playerConnections[player] = nil
+        end
+    end
+
+    function AutoServerHop:_disconnect()
+        for _, connection in ipairs(self.connections) do
+            connection:Disconnect()
+        end
+        table.clear(self.connections)
+        for player, connection in pairs(self.playerConnections) do
+            connection:Disconnect()
+            self.playerConnections[player] = nil
+        end
+    end
+
+    function AutoServerHop:_loop(generation)
+        task.wait(0.75)
+        while self.enabled and self.generation == generation do
+            if not self.hopping and os.clock() >= self.nextAttempt then
+                self:_audit(generation)
+            end
+            local delayTime = self.wake and 0.05 or Config.SERVER_HOP.POLL
+            self.wake = false
+            task.wait(delayTime)
+        end
+    end
+
+    function AutoServerHop:setEnabled(enabled)
+        enabled = enabled == true
+        if self.enabled == enabled then
+            return
+        end
+        self.enabled = enabled
+        self.generation += 1
+        self.hopping = false
+        self.wake = true
+        self.nextAttempt = 0
+        self:_disconnect()
+        self:_setTeleportSetting(ENABLED_KEY, enabled)
+
+        if enabled then
+            self:_remember(game.JobId)
+            table.insert(self.connections, Players.PlayerAdded:Connect(function(player)
+                self:_watchPlayer(player)
+                self.wake = true
+            end))
+            table.insert(self.connections, Players.PlayerRemoving:Connect(function(player)
+                self:_unwatchPlayer(player)
+                self.wake = true
+            end))
+            table.insert(self.connections, TeleportService.TeleportInitFailed:Connect(function(player, _, message)
+                if player == Players.LocalPlayer then
+                    self.hopping = false
+                    self.nextAttempt = os.clock() + Config.SERVER_HOP.RETRY_DELAY
+                    self:_status("Auto Rejoin: teleport recusado — " .. tostring(message))
+                end
+            end))
+            for _, player in ipairs(Players:GetPlayers()) do
+                self:_watchPlayer(player)
+            end
+            self:_saveState()
+            local generation = self.generation
+            task.spawn(function()
+                self:_loop(generation)
+            end)
+            return
+        end
+
+        self:_status("Auto Rejoin: OFF")
+    end
+
+    function AutoServerHop:stop()
+        self:setEnabled(false)
+    end
+
+    function AutoServerHop:Destroy()
+        self:stop()
+    end
+
+    return AutoServerHop
+end
+
+__factories["Features/FOVOverride"] = function()
+    local Workspace = game:GetService("Workspace")
+
+    local Config = __require("Config")
+
+    local FOVOverride = {}
+    FOVOverride.__index = FOVOverride
+
+    function FOVOverride.new(onStatus)
+        local self = setmetatable({
+            onStatus = onStatus or function() end,
+            enabled = false,
+            cameraConnection = nil,
+            workspaceConnection = nil,
+            originals = setmetatable({}, { __mode = "k" }),
+            writing = false,
+        }, FOVOverride)
+
+        self.workspaceConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+            self:_bindCamera()
+        end)
+        return self
+    end
+
+    function FOVOverride:_apply(camera)
+        if not self.enabled or not camera or self.writing then
+            return
+        end
+        if self.originals[camera] == nil then
+            self.originals[camera] = camera.FieldOfView
+        end
+        if camera.FieldOfView ~= Config.CAMERA.DEFAULT_FOV then
+            self.writing = true
+            camera.FieldOfView = Config.CAMERA.DEFAULT_FOV
+            self.writing = false
+        end
+    end
+
+    function FOVOverride:_bindCamera()
+        if self.cameraConnection then
+            self.cameraConnection:Disconnect()
+            self.cameraConnection = nil
+        end
+
+        local camera = Workspace.CurrentCamera
+        if camera and self.enabled then
+            self:_apply(camera)
+            self.cameraConnection = camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+                self:_apply(camera)
+            end)
+        end
+    end
+
+    function FOVOverride:setEnabled(enabled)
+        enabled = enabled == true
+        if self.enabled == enabled then
+            return
+        end
+        self.enabled = enabled
+
+        if enabled then
+            self:_bindCamera()
+            self.onStatus("Remover FOV: fixado em " .. tostring(Config.CAMERA.DEFAULT_FOV))
+            return
+        end
+
+        if self.cameraConnection then
+            self.cameraConnection:Disconnect()
+            self.cameraConnection = nil
+        end
+        self.writing = true
+        for camera, original in pairs(self.originals) do
+            pcall(function()
+                camera.FieldOfView = original
+            end)
+        end
+        self.writing = false
+        table.clear(self.originals)
+        self.onStatus("Remover FOV: valor anterior restaurado")
+    end
+
+    function FOVOverride:stop()
+        self:setEnabled(false)
+    end
+
+    function FOVOverride:Destroy()
+        self:stop()
+        if self.workspaceConnection then
+            self.workspaceConnection:Disconnect()
+            self.workspaceConnection = nil
+        end
+    end
+
+    return FOVOverride
 end
 
 __factories["Features/KillAll"] = function()
@@ -1813,6 +2503,9 @@ __factories["init"] = function()
     local TeamESP = __require("Features/TeamESP")
     local AutoLoot = __require("Features/AutoLoot")
     local AutoEvade = __require("Features/AutoEvade")
+    local AttributeOverrides = __require("Features/AttributeOverrides")
+    local FOVOverride = __require("Features/FOVOverride")
+    local AutoServerHop = __require("Features/AutoServerHop")
 
     local Main = {}
 
@@ -1891,6 +2584,9 @@ __factories["init"] = function()
         local teamESP = TeamESP.new(setStatus)
         local autoLoot = AutoLoot.new(movement, mapProvider, setStatus)
         local autoEvade = AutoEvade.new(movement, mapProvider, setStatus)
+        local attributeOverrides = AttributeOverrides.new(setStatus)
+        local fovOverride = FOVOverride.new(setStatus)
+        local autoServerHop = AutoServerHop.new(setStatus)
 
         app.controllers = {
             autoEscape,
@@ -1899,6 +2595,9 @@ __factories["init"] = function()
             teamESP,
             autoLoot,
             autoEvade,
+            attributeOverrides,
+            fovOverride,
+            autoServerHop,
         }
 
         contentItem(UI.section(content, "RODADA"))
@@ -1936,6 +2635,49 @@ __factories["init"] = function()
         contentItem(UI.checkbox(content, "Auto Fugir do Killer", false, function(enabled)
             autoEvade:setEnabled(enabled)
         end))
+
+        contentItem(UI.section(content, "GAMEPASSES LOCAIS"))
+        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
+            local attributeName = attribute
+            contentItem(UI.checkbox(content, attributeName, false, function(enabled)
+                attributeOverrides:setOverride("Gamepasses", attributeName, enabled)
+            end))
+        end
+
+        contentItem(UI.section(content, "SETTINGS LOCAIS"))
+        for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.SETTINGS) do
+            local attributeName = attribute
+            contentItem(UI.checkbox(content, attributeName, false, function(enabled)
+                attributeOverrides:setOverride("Settings", attributeName, enabled)
+            end))
+        end
+
+        contentItem(UI.section(content, "CAMERA"))
+        contentItem(UI.checkbox(content, "Remover mudancas de FOV (fixar 70)", false, function(enabled)
+            fovOverride:setEnabled(enabled)
+        end))
+
+        contentItem(UI.section(content, "AUTO REJOIN / SERVER HOP"))
+        contentItem(UI.numberInput(
+            content,
+            "Trocar se outro jogador tiver nivel >=",
+            autoServerHop:getLevelLimit(),
+            Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+            Config.SERVER_HOP.MAX_LEVEL_LIMIT,
+            function(level)
+                autoServerHop:setLevelLimit(level)
+            end
+        ))
+        local resumeServerHop = autoServerHop:shouldResume()
+        contentItem(UI.checkbox(content, "Auto Rejoin por quantidade/nivel", resumeServerHop, function(enabled)
+            autoServerHop:setEnabled(enabled)
+        end))
+        local serverHopNote = contentItem(UI.info(
+            content,
+            "Ignora seu proprio nivel. Guarda os ultimos 10 JobIds e exige pelo menos outro jogador.",
+            34
+        ))
+        serverHopNote.TextColor3 = window.colors.muted
 
         function app:Destroy()
             if self.destroyed then
@@ -1981,6 +2723,10 @@ __factories["init"] = function()
         window:setCloseCallback(function()
             app:Destroy()
         end)
+
+        if resumeServerHop then
+            autoServerHop:setEnabled(true)
+        end
 
         env[GLOBAL_KEY] = app
         setStatus(string.format("Pronto — GameId %d / PlaceId %d", game.GameId, game.PlaceId))
