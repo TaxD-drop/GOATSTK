@@ -6,8 +6,8 @@ Hub cliente independente criado a partir dos seis logs completos e dos dumps de
 
 ## Antes de executar
 
-Os IDs foram deixados em `0` de propósito, conforme solicitado. Abra
-`Config.lua` e preencha:
+Os IDs são lidos de `Config.lua`. Para alterar o jogo ou adicionar outro place,
+edite:
 
 ```lua
 GAME_ID = 123456789,
@@ -24,7 +24,7 @@ cd /storage/emulated/0/Codigos/GOATSTK/GOATHubSTK
 python3 tools/build_bundle.py
 ```
 
-Enquanto `GAME_ID` ou todos os `PLACE_IDS` estiverem zerados, o bundle encerra
+Se `GAME_ID` ou todos os `PLACE_IDS` estiverem zerados, o bundle encerra
 antes de montar módulos, interface ou recursos. Ele também encerra silenciosamente
 quando executado fora do jogo/place configurado.
 
@@ -52,22 +52,44 @@ suas conexões/loops/highlights são removidos e a nova interface assume o lugar
 - **Team ESP** — `Highlight` azul para Survivor e vermelho para Killer, atualizado
   em respawn, mudança de time e mudança de `Downed`.
 - **Auto Collect Loot** — descobre loot pela tag `Loot`, filho `Border` e atributo
-  `Loot` no spawn pai; observa novas tags para recolher também os respawns.
+  `Loot` no spawn pai. Só considera disponível quando encontra uma `BasePart` ou
+  `Decal` visual com `Transparency < 0.99` dentro do modelo; continua observando o
+  mesmo objeto e novas tags para recolher ambos os tipos de respawn.
 - **Auto Fugir do Killer** — como Survivor, mede a distância configurável do
   Killer e escolhe outra superfície válida dentro do modelo do mapa atual. Pontos
   de loot, saída, teto, parede, locker e containers de spawn são excluídos.
+- **Gamepasses/Settings locais** — caixas independentes para os 13 atributos de
+  `LocalPlayer.Gamepasses` solicitados e para `Settings.double_jump` e
+  `Settings.killer_chance_3x`. Ao desmarcar ou fechar o Hub, o valor anterior é
+  restaurado. Esses overrides são locais; benefícios validados pelo servidor não
+  são garantidos.
+- **Remover FOV** — mantém a câmera em `70` enquanto marcado e restaura o valor
+  capturado ao desmarcar, inclusive após substituição de `CurrentCamera`.
+- **Auto Rejoin** — troca quando o jogador local está sozinho ou quando qualquer
+  **outro** jogador possui nível igual/maior ao limite configurado. O nível do
+  jogador local nunca é lido para essa decisão.
 
-Quando mais de um recurso quer mover o personagem, a prioridade é:
-
-```text
-Auto Escape > Auto Fugir > Kill All > Auto Revive > Auto Loot
-```
+Não existe fila ou prioridade entre os recursos. Cada automação obedece apenas às
+próprias regras de time/estado; se duas automações compatíveis forem ligadas juntas,
+a ação mais recente de cada loop pode mover o personagem.
 
 ## Configuração útil
 
 `Config.lua` concentra IDs, dimensões da interface, distâncias e tempos. A
 distância do Auto Fugir também pode ser alterada na interface entre 15 e 120
 studs. O padrão é 45.
+
+O Auto Rejoin lê primeiro o atributo replicado `Level` dos outros jogadores — a
+mesma origem usada pelo `PlayerListHandler` para preencher `RankBadge.Level` — e
+usa o caminho da GUI como fallback. A lista pública não informa níveis: o Hub
+entra em um servidor aleatório com pessoas e vaga, valida os níveis depois de
+entrar e troca novamente se necessário. Ele mantém uma fila dos últimos 10 JobIds;
+ao adicionar o 11º, remove o mais antigo.
+
+Para o Auto Rejoin continuar por vários teleports, o executor precisa executar o
+bundle automaticamente. Como alternativa, preencha `SERVER_HOP.RELOAD_URL` em
+`Config.lua` com a URL raw do bundle; quando `queue_on_teleport` estiver disponível,
+o Hub enfileira essa URL antes de trocar.
 
 ## Estrutura
 
@@ -99,6 +121,8 @@ python3 tools/build_bundle.py
 python3 tests/check_layout.py
 python3 tests/check_static.py
 luau tests/layout_spec.luau
+luau tests/loot_visibility_spec.luau
+luau tests/server_hop_policy_spec.luau
 find . -name '*.lua' -type f -exec luau-compile --only-parse '{}' ';'
 ```
 
