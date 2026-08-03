@@ -76,6 +76,37 @@ local __factories = {}
 local __cache = { Config = __config }
 local __require
 
+__factories["Core/LootVisibility"] = function()
+    local LootVisibility = {}
+
+    local VISIBLE_TRANSPARENCY = 0.99
+
+    local function isVisibleVisual(instance)
+        if instance:IsA("BasePart") or instance:IsA("Decal") then
+            return instance.Transparency < VISIBLE_TRANSPARENCY
+        end
+        return false
+    end
+
+    function LootVisibility.isAvailable(instance)
+        if not instance or not instance.Parent then
+            return false
+        end
+
+        if isVisibleVisual(instance) then
+            return true
+        end
+        for _, descendant in ipairs(instance:GetDescendants()) do
+            if isVisibleVisual(descendant) then
+                return true
+            end
+        end
+        return false
+    end
+
+    return LootVisibility
+end
+
 __factories["Core/MovementCoordinator"] = function()
     local Runtime = __require("Core/Runtime")
 
@@ -86,29 +117,17 @@ __factories["Core/MovementCoordinator"] = function()
         return setmetatable({
             destroyed = false,
             owner = nil,
-            priority = -math.huge,
-            lockUntil = 0,
             token = 0,
         }, MovementCoordinator)
     end
 
-    function MovementCoordinator:_expired()
-        return self.owner == nil or os.clock() >= self.lockUntil
-    end
-
-    function MovementCoordinator:acquire(owner, priority, holdSeconds)
+    function MovementCoordinator:acquire(owner)
         if self.destroyed then
-            return nil
-        end
-
-        if not self:_expired() and self.owner ~= owner and priority < self.priority then
             return nil
         end
 
         self.token += 1
         self.owner = owner
-        self.priority = priority
-        self.lockUntil = os.clock() + math.max(holdSeconds or 0, 0)
         return self.token
     end
 
@@ -116,8 +135,8 @@ __factories["Core/MovementCoordinator"] = function()
         return not self.destroyed and self.owner == owner and self.token == token
     end
 
-    function MovementCoordinator:move(owner, priority, destination, holdSeconds)
-        local token = self:acquire(owner, priority, holdSeconds)
+    function MovementCoordinator:move(owner, destination)
+        local token = self:acquire(owner)
         if not token then
             return false, nil
         end
@@ -140,8 +159,6 @@ __factories["Core/MovementCoordinator"] = function()
             return
         end
         self.owner = nil
-        self.priority = -math.huge
-        self.lockUntil = 0
     end
 
     function MovementCoordinator:stopOwner(owner)
@@ -153,8 +170,6 @@ __factories["Core/MovementCoordinator"] = function()
     function MovementCoordinator:Destroy()
         self.destroyed = true
         self.owner = nil
-        self.priority = -math.huge
-        self.lockUntil = 0
         self.token += 1
     end
 
@@ -277,7 +292,6 @@ __factories["Features/AutoEscape"] = function()
     AutoEscape.__index = AutoEscape
 
     local OWNER = "AutoEscape"
-    local PRIORITY = 100
 
     local function touch(root, trigger)
         if typeof(firetouchinterest) == "function" then
@@ -334,7 +348,7 @@ __factories["Features/AutoEscape"] = function()
         end
 
         local destination = selected.trigger.CFrame + Vector3.new(0, 2, 0)
-        local moved, token = self.movement:move(OWNER, PRIORITY, destination, 2)
+        local moved, token = self.movement:move(OWNER, destination)
         if not moved then
             return false
         end
@@ -424,7 +438,6 @@ __factories["Features/AutoEvade"] = function()
     AutoEvade.__index = AutoEvade
 
     local OWNER = "AutoEvade"
-    local PRIORITY = 90
 
     function AutoEvade.new(movement, mapProvider, onStatus)
         return setmetatable({
@@ -492,7 +505,7 @@ __factories["Features/AutoEvade"] = function()
             return false
         end
 
-        local moved = self.movement:move(OWNER, PRIORITY, destination, Config.TIMING.EVADE_COOLDOWN)
+        local moved = self.movement:move(OWNER, destination)
         if moved then
             self.nextEvade = os.clock() + Config.TIMING.EVADE_COOLDOWN
             self.onStatus(string.format("Auto Fugir: %s estava a %.1f studs", killer.Name, nearestDistance))
@@ -540,7 +553,6 @@ end
 
 __factories["Features/AutoLoot"] = function()
     local CollectionService = game:GetService("CollectionService")
-    local Workspace = game:GetService("Workspace")
 
     local Config = __require("Config")
     local Runtime = __require("Core/Runtime")
@@ -549,7 +561,6 @@ __factories["Features/AutoLoot"] = function()
     AutoLoot.__index = AutoLoot
 
     local OWNER = "AutoLoot"
-    local PRIORITY = 40
 
     local function touch(root, border)
         if typeof(firetouchinterest) == "function" then
@@ -588,7 +599,9 @@ __factories["Features/AutoLoot"] = function()
         local selected = nil
         local selectedDistance = math.huge
         for _, loot in ipairs(self.mapProvider:getLoot()) do
-            if (self.cooldowns[loot.instance] or 0) <= now then
+            if (self.cooldowns[loot.instance] or 0) <= now
+                and self.mapProvider:isLootAvailable(loot.instance)
+            then
                 local distance = (loot.border.Position - root.Position).Magnitude
                 if distance < selectedDistance then
                     selected = loot
@@ -601,13 +614,16 @@ __factories["Features/AutoLoot"] = function()
 
     function AutoLoot:_collect(loot)
         local root = Runtime.getRoot()
-        if not root or not loot.border.Parent then
+        if not root
+            or not loot.border.Parent
+            or not self.mapProvider:isLootAvailable(loot.instance)
+        then
             return false
         end
 
         self.cooldowns[loot.instance] = os.clock() + Config.TIMING.LOOT_RETRY
         local destination = loot.border.CFrame + Vector3.new(0, 1.5, 0)
-        local moved, token = self.movement:move(OWNER, PRIORITY, destination, Config.TIMING.LOOT_TOUCH)
+        local moved, token = self.movement:move(OWNER, destination)
         if not moved then
             self.cooldowns[loot.instance] = os.clock() + 0.25
             return false
@@ -631,7 +647,6 @@ __factories["Features/AutoLoot"] = function()
                 and Runtime.isAlive()
                 and not Runtime.isDowned()
                 and not Runtime.isEscaped()
-                and Workspace:GetAttribute("ExitsOpen") ~= true
             then
                 local loot = self:_nextLoot()
                 if loot then
@@ -688,7 +703,6 @@ __factories["Features/AutoRevive"] = function()
     AutoRevive.__index = AutoRevive
 
     local OWNER = "AutoRevive"
-    local PRIORITY = 70
 
     function AutoRevive.new(movement, onStatus)
         return setmetatable({
@@ -786,7 +800,7 @@ __factories["Features/AutoRevive"] = function()
         local height = Vector3.new(0, rescuingSelf and 0.8 or 1.4, 0)
         local position = targetRoot.Position + side + height
         local destination = CFrame.lookAt(position, targetRoot.Position)
-        self.movement:move(OWNER, PRIORITY, destination, Config.TIMING.REVIVE_FOLLOW * 1.5)
+        self.movement:move(OWNER, destination)
     end
 
     function AutoRevive:_loop(generation)
@@ -854,7 +868,6 @@ __factories["Features/KillAll"] = function()
     KillAll.__index = KillAll
 
     local OWNER = "KillAll"
-    local PRIORITY = 80
 
     function KillAll.new(movement, onStatus)
         return setmetatable({
@@ -907,7 +920,7 @@ __factories["Features/KillAll"] = function()
 
         local attackPosition = targetRoot.Position + Vector3.new(0, Config.DISTANCES.KILL_OFFSET_UP, 1.5)
         local destination = CFrame.lookAt(attackPosition, targetRoot.Position)
-        local moved, token = self.movement:move(OWNER, PRIORITY, destination, Config.TIMING.KNIFE_SLASH)
+        local moved, token = self.movement:move(OWNER, destination)
         if not moved then
             return false
         end
@@ -1116,6 +1129,7 @@ __factories["Providers/MapProvider"] = function()
     local Workspace = game:GetService("Workspace")
 
     local Runtime = __require("Core/Runtime")
+    local LootVisibility = __require("Core/LootVisibility")
 
     local MapProvider = {}
     MapProvider.__index = MapProvider
@@ -1251,7 +1265,12 @@ __factories["Providers/MapProvider"] = function()
             if instance:IsDescendantOf(map) then
                 local border = instance:FindFirstChild("Border")
                 local lootID = instance.Parent and instance.Parent:GetAttribute("Loot")
-                if border and border:IsA("BasePart") and typeof(lootID) == "string" and lootID ~= "" then
+                if border
+                    and border:IsA("BasePart")
+                    and typeof(lootID) == "string"
+                    and lootID ~= ""
+                    and self:isLootAvailable(instance)
+                then
                     table.insert(loot, {
                         instance = instance,
                         border = border,
@@ -1261,6 +1280,10 @@ __factories["Providers/MapProvider"] = function()
             end
         end
         return loot
+    end
+
+    function MapProvider:isLootAvailable(instance)
+        return LootVisibility.isAvailable(instance)
     end
 
     function MapProvider:findSafeCFrame(killerRoots, currentPosition, minimumTravel)
@@ -1913,13 +1936,6 @@ __factories["init"] = function()
         contentItem(UI.checkbox(content, "Auto Fugir do Killer", false, function(enabled)
             autoEvade:setEnabled(enabled)
         end))
-
-        local note = contentItem(UI.info(
-            content,
-            "Prioridade de movimento: Escape > Fugir > Kill All > Revive > Loot.",
-            34
-        ))
-        note.TextColor3 = window.colors.muted
 
         function app:Destroy()
             if self.destroyed then
