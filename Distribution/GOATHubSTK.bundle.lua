@@ -395,6 +395,127 @@ __factories["Core/ServerHopPolicy"] = function()
     return ServerHopPolicy
 end
 
+__factories["Core/StateStore"] = function()
+    local HttpService = game:GetService("HttpService")
+    local TeleportService = game:GetService("TeleportService")
+
+    local StateStore = {}
+    StateStore.__index = StateStore
+
+    local TELEPORT_KEY = "GOATHubSTK_State_v1"
+    local GLOBAL_KEY = "__GOATHUB_STK_STATE_V1"
+
+    local function environment()
+        if typeof(getgenv) == "function" then
+            return getgenv()
+        end
+        return _G
+    end
+
+    local function copySupported(source)
+        local result = {}
+        if typeof(source) ~= "table" then
+            return result
+        end
+        for key, value in pairs(source) do
+            local valueType = typeof(value)
+            if typeof(key) == "string"
+                and (valueType == "boolean" or valueType == "number" or valueType == "string")
+            then
+                result[key] = value
+            end
+        end
+        return result
+    end
+
+    function StateStore.new()
+        local env = environment()
+        local values = nil
+        local ok, stored = pcall(function()
+            return TeleportService:GetTeleportSetting(TELEPORT_KEY)
+        end)
+        if ok and typeof(stored) == "string" and stored ~= "" then
+            local decodedOk, decoded = pcall(function()
+                return HttpService:JSONDecode(stored)
+            end)
+            if decodedOk then
+                values = decoded
+            end
+        elseif ok and typeof(stored) == "table" then
+            values = stored
+        end
+        if typeof(values) ~= "table" then
+            values = env[GLOBAL_KEY]
+        end
+
+        local self = setmetatable({
+            values = copySupported(values),
+            env = env,
+        }, StateStore)
+        self.env[GLOBAL_KEY] = self.values
+        return self
+    end
+
+    function StateStore:_save()
+        self.env[GLOBAL_KEY] = self.values
+        local ok, encoded = pcall(function()
+            return HttpService:JSONEncode(self.values)
+        end)
+        if ok then
+            pcall(function()
+                TeleportService:SetTeleportSetting(TELEPORT_KEY, encoded)
+            end)
+        end
+    end
+
+    function StateStore:getBoolean(key, defaultValue)
+        local value = self.values[key]
+        if typeof(value) == "boolean" then
+            return value
+        end
+        return defaultValue == true
+    end
+
+    function StateStore:has(key)
+        return self.values[key] ~= nil
+    end
+
+    function StateStore:getNumber(key, defaultValue, minimum, maximum)
+        local value = tonumber(self.values[key]) or tonumber(defaultValue) or 0
+        if minimum ~= nil and maximum ~= nil then
+            value = math.clamp(value, minimum, maximum)
+        end
+        return value
+    end
+
+    function StateStore:setBoolean(key, value)
+        value = value == true
+        if self.values[key] == value then
+            return
+        end
+        self.values[key] = value
+        self:_save()
+    end
+
+    function StateStore:setNumber(key, value, minimum, maximum)
+        value = tonumber(value) or 0
+        if minimum ~= nil and maximum ~= nil then
+            value = math.clamp(value, minimum, maximum)
+        end
+        if self.values[key] == value then
+            return
+        end
+        self.values[key] = value
+        self:_save()
+    end
+
+    function StateStore:flush()
+        self:_save()
+    end
+
+    return StateStore
+end
+
 __factories["Features/AttributeOverrides"] = function()
     local Runtime = __require("Core/Runtime")
 
@@ -1102,10 +1223,20 @@ __factories["Features/AutoServerHop"] = function()
         if typeof(queue_on_teleport) == "function" then
             return queue_on_teleport
         end
+        if typeof(queueonteleport) == "function" then
+            return queueonteleport
+        end
         if typeof(syn) == "table" and typeof(syn.queue_on_teleport) == "function" then
             return syn.queue_on_teleport
         end
         return nil
+    end
+
+    local function environment()
+        if typeof(getgenv) == "function" then
+            return getgenv()
+        end
+        return _G
     end
 
     function AutoServerHop.new(onStatus)
@@ -1305,12 +1436,20 @@ __factories["Features/AutoServerHop"] = function()
 
     function AutoServerHop:_queueReload()
         local url = Config.SERVER_HOP.RELOAD_URL
+        if typeof(url) ~= "string" or url == "" then
+            url = environment().__GOATHUB_STK_RELOAD_URL
+        end
         local queue = getQueueFunction()
         if not queue or typeof(url) ~= "string" or url == "" then
             return false
         end
 
-        local source = string.format("loadstring(game:HttpGet(%q))()", url)
+        local source = string.format(
+            "local e=typeof(getgenv)=='function' and getgenv() or _G;"
+                .. "e.__GOATHUB_STK_RELOAD_URL=%q;loadstring(game:HttpGet(%q))()",
+            url,
+            url
+        )
         return pcall(queue, source)
     end
 
@@ -2506,6 +2645,7 @@ __factories["init"] = function()
     local AttributeOverrides = __require("Features/AttributeOverrides")
     local FOVOverride = __require("Features/FOVOverride")
     local AutoServerHop = __require("Features/AutoServerHop")
+    local StateStore = __require("Core/StateStore")
 
     local Main = {}
 
@@ -2554,12 +2694,14 @@ __factories["init"] = function()
 
         local movement = MovementCoordinator.new()
         local mapProvider = MapProvider.new()
+        local stateStore = StateStore.new()
         local window = UI.new(Config.UI.TITLE)
         local content = window.content
         local layoutOrder = 0
 
         app.movement = movement
         app.mapProvider = mapProvider
+        app.stateStore = stateStore
         app.window = window
 
         local function contentItem(instance)
@@ -2576,6 +2718,24 @@ __factories["init"] = function()
             if not app.destroyed and status.Parent then
                 status.Text = tostring(message)
             end
+        end
+
+        local restoreActions = {}
+        local function persistentCheckbox(label, key, apply, defaultValue)
+            local initial = stateStore:getBoolean(key, defaultValue)
+            if not stateStore:has(key) then
+                stateStore:setBoolean(key, initial)
+            end
+            contentItem(UI.checkbox(content, label, initial, function(enabled)
+                stateStore:setBoolean(key, enabled)
+                apply(enabled)
+            end))
+            if initial then
+                table.insert(restoreActions, function()
+                    apply(true)
+                end)
+            end
+            return initial
         end
 
         local autoEscape = AutoEscape.new(movement, mapProvider, setStatus)
@@ -2601,77 +2761,114 @@ __factories["init"] = function()
         }
 
         contentItem(UI.section(content, "RODADA"))
-        contentItem(UI.checkbox(content, "Auto Escape", false, function(enabled)
+        persistentCheckbox("Auto Escape", "feature.autoEscape", function(enabled)
             autoEscape:setEnabled(enabled)
-        end))
-        contentItem(UI.checkbox(content, "Kill All (somente Killer)", false, function(enabled)
+        end)
+        persistentCheckbox("Kill All (somente Killer)", "feature.killAll", function(enabled)
             killAll:setEnabled(enabled)
-        end))
-        contentItem(UI.checkbox(content, "Auto Revive / buscar ajuda", false, function(enabled)
+        end)
+        persistentCheckbox("Auto Revive / buscar ajuda", "feature.autoRevive", function(enabled)
             autoRevive:setEnabled(enabled)
-        end))
+        end)
 
         contentItem(UI.section(content, "VISUAL E LOOT"))
-        contentItem(UI.checkbox(content, "Team ESP — azul/vermelho", false, function(enabled)
+        persistentCheckbox("Team ESP — azul/vermelho", "feature.teamESP", function(enabled)
             teamESP:setEnabled(enabled)
-        end))
-        contentItem(UI.checkbox(content, "Auto Collect Loot", false, function(enabled)
+        end)
+        persistentCheckbox("Auto Collect Loot", "feature.autoLoot", function(enabled)
             autoLoot:setEnabled(enabled)
-        end))
+        end)
 
         contentItem(UI.section(content, "SEGURANCA DO SURVIVOR"))
+        local evadeDistance = stateStore:getNumber(
+            "value.evadeDistance",
+            Config.DISTANCES.KILLER_EVADE,
+            15,
+            120
+        )
+        if not stateStore:has("value.evadeDistance") then
+            stateStore:setNumber("value.evadeDistance", evadeDistance, 15, 120)
+        end
+        autoEvade:setDistance(evadeDistance)
+        autoRevive:setDangerDistance(evadeDistance)
         contentItem(UI.numberInput(
             content,
             "Fugir quando Killer estiver a (studs)",
-            Config.DISTANCES.KILLER_EVADE,
+            evadeDistance,
             15,
             120,
             function(distance)
+                stateStore:setNumber("value.evadeDistance", distance, 15, 120)
                 autoEvade:setDistance(distance)
                 autoRevive:setDangerDistance(distance)
                 setStatus("Distancia de seguranca: " .. tostring(math.floor(distance + 0.5)) .. " studs")
             end
         ))
-        contentItem(UI.checkbox(content, "Auto Fugir do Killer", false, function(enabled)
+        persistentCheckbox("Auto Fugir do Killer", "feature.autoEvade", function(enabled)
             autoEvade:setEnabled(enabled)
-        end))
+        end)
 
         contentItem(UI.section(content, "GAMEPASSES LOCAIS"))
         for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
             local attributeName = attribute
-            contentItem(UI.checkbox(content, attributeName, false, function(enabled)
+            persistentCheckbox(attributeName, "attribute.Gamepasses." .. attributeName, function(enabled)
                 attributeOverrides:setOverride("Gamepasses", attributeName, enabled)
-            end))
+            end)
         end
 
         contentItem(UI.section(content, "SETTINGS LOCAIS"))
         for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.SETTINGS) do
             local attributeName = attribute
-            contentItem(UI.checkbox(content, attributeName, false, function(enabled)
+            persistentCheckbox(attributeName, "attribute.Settings." .. attributeName, function(enabled)
                 attributeOverrides:setOverride("Settings", attributeName, enabled)
-            end))
+            end)
         end
 
         contentItem(UI.section(content, "CAMERA"))
-        contentItem(UI.checkbox(content, "Remover mudancas de FOV (fixar 70)", false, function(enabled)
+        persistentCheckbox("Remover mudancas de FOV (fixar 70)", "feature.fovOverride", function(enabled)
             fovOverride:setEnabled(enabled)
-        end))
+        end)
 
         contentItem(UI.section(content, "AUTO REJOIN / SERVER HOP"))
+        local savedLevelLimit = stateStore:getNumber(
+            "value.serverHopLevel",
+            autoServerHop:getLevelLimit(),
+            Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+            Config.SERVER_HOP.MAX_LEVEL_LIMIT
+        )
+        if not stateStore:has("value.serverHopLevel") then
+            stateStore:setNumber(
+                "value.serverHopLevel",
+                savedLevelLimit,
+                Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+                Config.SERVER_HOP.MAX_LEVEL_LIMIT
+            )
+        end
+        autoServerHop:setLevelLimit(savedLevelLimit)
         contentItem(UI.numberInput(
             content,
             "Trocar se outro jogador tiver nivel >=",
-            autoServerHop:getLevelLimit(),
+            savedLevelLimit,
             Config.SERVER_HOP.MIN_LEVEL_LIMIT,
             Config.SERVER_HOP.MAX_LEVEL_LIMIT,
             function(level)
+                stateStore:setNumber(
+                    "value.serverHopLevel",
+                    level,
+                    Config.SERVER_HOP.MIN_LEVEL_LIMIT,
+                    Config.SERVER_HOP.MAX_LEVEL_LIMIT
+                )
                 autoServerHop:setLevelLimit(level)
             end
         ))
-        local resumeServerHop = autoServerHop:shouldResume()
-        contentItem(UI.checkbox(content, "Auto Rejoin por quantidade/nivel", resumeServerHop, function(enabled)
-            autoServerHop:setEnabled(enabled)
-        end))
+        persistentCheckbox(
+            "Auto Rejoin por quantidade/nivel",
+            "feature.autoServerHop",
+            function(enabled)
+                autoServerHop:setEnabled(enabled)
+            end,
+            autoServerHop:shouldResume()
+        )
         local serverHopNote = contentItem(UI.info(
             content,
             "Ignora seu proprio nivel. Guarda os ultimos 10 JobIds e exige pelo menos outro jogador.",
@@ -2724,12 +2921,12 @@ __factories["init"] = function()
             app:Destroy()
         end)
 
-        if resumeServerHop then
-            autoServerHop:setEnabled(true)
-        end
-
         env[GLOBAL_KEY] = app
         setStatus(string.format("Pronto — GameId %d / PlaceId %d", game.GameId, game.PlaceId))
+        stateStore:flush()
+        for _, restore in ipairs(restoreActions) do
+            pcall(restore)
+        end
         return app
     end
 
