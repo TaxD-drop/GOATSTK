@@ -11,6 +11,8 @@ local __config = (function()
             4580204640,
         }),
 
+        UI_STYLE = "Modern",
+
         UI = table.freeze({
             TITLE = "GOAT Hub — STK",
             PADDING = 12,
@@ -19,6 +21,20 @@ local __config = (function()
             COMPACT_WIDTH = 350,
             COMPACT_BREAKPOINT = 520,
             NARROW_BREAKPOINT = 620,
+        }),
+
+        MODERN_UI = table.freeze({
+            TITLE = "GOAT Hub — STK",
+            PADDING = 12,
+            DESKTOP_WIDTH = 660,
+            DESKTOP_HEIGHT = 520,
+            COMPACT_WIDTH = 570,
+            COMPACT_BREAKPOINT = 520,
+            NARROW_BREAKPOINT = 620,
+            HEADER_HEIGHT = 54,
+            COMPACT_HEADER_HEIGHT = 48,
+            TAB_HEIGHT = 44,
+            STATUS_HEIGHT = 34,
         }),
 
         DISTANCES = table.freeze({
@@ -74,6 +90,7 @@ local __config = (function()
             LOOT_POLL = 0.20,
             LOOT_TOUCH = 0.16,
             LOOT_RETRY = 3.25,
+            LOOT_ESP_POLL = 0.25,
             EVADE_POLL = 0.08,
             EVADE_COOLDOWN = 1.50,
         }),
@@ -1931,6 +1948,202 @@ __factories["Features/KillAll"] = function()
     return KillAll
 end
 
+__factories["Features/LootESP"] = function()
+    local CollectionService = game:GetService("CollectionService")
+
+    local Config = __require("Config")
+
+    local LootESP = {}
+    LootESP.__index = LootESP
+
+    local HIGHLIGHT_NAME = "GOATHubSTK_LootAura"
+    local LABEL_NAME = "GOATHubSTK_LootLabel"
+    local LOOT_COLOR = Color3.fromRGB(255, 196, 72)
+
+    function LootESP.new(mapProvider, onStatus)
+        local self = setmetatable({
+            mapProvider = mapProvider,
+            onStatus = onStatus or function() end,
+            enabled = false,
+            generation = 0,
+            visuals = {},
+            wake = false,
+            connections = {},
+        }, LootESP)
+
+        table.insert(self.connections, CollectionService:GetInstanceAddedSignal("Loot"):Connect(function()
+            self.wake = true
+        end))
+        table.insert(self.connections, CollectionService:GetInstanceRemovedSignal("Loot"):Connect(function()
+            self.wake = true
+        end))
+        return self
+    end
+
+    function LootESP:_destroyVisual(instance)
+        local visual = self.visuals[instance]
+        self.visuals[instance] = nil
+        if not visual then
+            return
+        end
+        if visual.highlight then
+            visual.highlight:Destroy()
+        end
+        if visual.billboard then
+            visual.billboard:Destroy()
+        end
+    end
+
+    function LootESP:_createVisual(loot)
+        local oldHighlight = loot.instance:FindFirstChild(HIGHLIGHT_NAME)
+        if oldHighlight then
+            oldHighlight:Destroy()
+        end
+        local oldLabel = loot.border:FindFirstChild(LABEL_NAME)
+        if oldLabel then
+            oldLabel:Destroy()
+        end
+
+        local highlight = Instance.new("Highlight")
+        highlight.Name = HIGHLIGHT_NAME
+        highlight.Adornee = loot.instance
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.FillColor = LOOT_COLOR
+        highlight.OutlineColor = Color3.fromRGB(255, 241, 190)
+        highlight.FillTransparency = 0.62
+        highlight.OutlineTransparency = 0
+        highlight.Parent = loot.instance
+
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = LABEL_NAME
+        billboard.Adornee = loot.border
+        billboard.AlwaysOnTop = true
+        billboard.Size = UDim2.fromOffset(150, 32)
+        billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.1, 0)
+        billboard.MaxDistance = 350
+        billboard.Parent = loot.border
+
+        local text = Instance.new("TextLabel")
+        text.Size = UDim2.fromScale(1, 1)
+        text.BackgroundTransparency = 1
+        text.Text = "LOOT  ·  " .. tostring(loot.id)
+        text.TextColor3 = LOOT_COLOR
+        text.TextStrokeColor3 = Color3.fromRGB(9, 12, 19)
+        text.TextStrokeTransparency = 0.18
+        text.Font = Enum.Font.GothamBold
+        text.TextSize = 12
+        text.Parent = billboard
+
+        self.visuals[loot.instance] = {
+            border = loot.border,
+            highlight = highlight,
+            billboard = billboard,
+        }
+    end
+
+    function LootESP:_sync()
+        local seen = {}
+        for _, loot in ipairs(self.mapProvider:getLoot()) do
+            if loot.instance.Parent
+                and loot.border.Parent
+                and self.mapProvider:isLootAvailable(loot.instance)
+            then
+                seen[loot.instance] = true
+                local visual = self.visuals[loot.instance]
+                if not visual
+                    or visual.border ~= loot.border
+                    or not visual.highlight.Parent
+                    or not visual.billboard.Parent
+                then
+                    self:_destroyVisual(loot.instance)
+                    self:_createVisual(loot)
+                end
+            end
+        end
+
+        local stale = {}
+        for instance in pairs(self.visuals) do
+            if not seen[instance] then
+                table.insert(stale, instance)
+            end
+        end
+        for _, instance in ipairs(stale) do
+            self:_destroyVisual(instance)
+        end
+    end
+
+    function LootESP:_clear()
+        local instances = {}
+        for instance in pairs(self.visuals) do
+            table.insert(instances, instance)
+        end
+        for _, instance in ipairs(instances) do
+            self:_destroyVisual(instance)
+        end
+    end
+
+    function LootESP:_clearTaggedArtifacts()
+        for _, instance in ipairs(CollectionService:GetTagged("Loot")) do
+            local highlight = instance:FindFirstChild(HIGHLIGHT_NAME)
+            if highlight then
+                highlight:Destroy()
+            end
+            local border = instance:FindFirstChild("Border")
+            local billboard = border and border:FindFirstChild(LABEL_NAME)
+            if billboard then
+                billboard:Destroy()
+            end
+        end
+    end
+
+    function LootESP:_loop(generation)
+        while self.enabled and self.generation == generation do
+            self:_sync()
+            local delayTime = self.wake and 0.03 or Config.TIMING.LOOT_ESP_POLL
+            self.wake = false
+            task.wait(delayTime)
+        end
+    end
+
+    function LootESP:setEnabled(enabled)
+        enabled = enabled == true
+        if self.enabled == enabled then
+            return
+        end
+        if enabled then
+            self.enabled = true
+            self.generation += 1
+            self.wake = true
+            self:_clearTaggedArtifacts()
+            local generation = self.generation
+            task.spawn(function()
+                self:_loop(generation)
+            end)
+            self.onStatus("Loot ESP: loot disponivel destacado em dourado")
+        else
+            self:stop()
+            self.onStatus("Loot ESP: OFF")
+        end
+    end
+
+    function LootESP:stop()
+        self.enabled = false
+        self.generation += 1
+        self:_clear()
+        self:_clearTaggedArtifacts()
+    end
+
+    function LootESP:Destroy()
+        self:stop()
+        for _, connection in ipairs(self.connections) do
+            connection:Disconnect()
+        end
+        table.clear(self.connections)
+    end
+
+    return LootESP
+end
+
 __factories["Features/TeamESP"] = function()
     local Runtime = __require("Core/Runtime")
 
@@ -2401,7 +2614,9 @@ __factories["UI/Layout"] = function()
             height = math.min(config.DESKTOP_HEIGHT, availableHeight),
             centerX = viewport.X / 2,
             centerY = viewport.Y / 2,
-            headerHeight = compact and 38 or 42,
+            headerHeight = compact
+                and (config.COMPACT_HEADER_HEIGHT or 38)
+                or (config.HEADER_HEIGHT or 42),
             rowHeight = compact and 34 or 38,
             textSize = compact and 12 or 13,
         }
@@ -2451,6 +2666,692 @@ __factories["UI/Layout"] = function()
     end
 
     return Layout
+end
+
+__factories["UI/ModernUI"] = function()
+    local Players = game:GetService("Players")
+    local TweenService = game:GetService("TweenService")
+    local UserInputService = game:GetService("UserInputService")
+    local Workspace = game:GetService("Workspace")
+
+    local Config = __require("Config")
+    local Layout = __require("UI/Layout")
+
+    local UI = {}
+
+    local COLORS = table.freeze({
+        background = Color3.fromRGB(7, 10, 18),
+        panel = Color3.fromRGB(11, 16, 29),
+        header = Color3.fromRGB(14, 20, 35),
+        surface = Color3.fromRGB(17, 24, 42),
+        card = Color3.fromRGB(22, 31, 52),
+        cardHover = Color3.fromRGB(28, 39, 65),
+        text = Color3.fromRGB(242, 246, 255),
+        muted = Color3.fromRGB(139, 153, 180),
+        accent = Color3.fromRGB(92, 124, 250),
+        accentBright = Color3.fromRGB(102, 208, 255),
+        green = Color3.fromRGB(62, 211, 143),
+        red = Color3.fromRGB(244, 91, 105),
+        border = Color3.fromRGB(43, 57, 85),
+        track = Color3.fromRGB(50, 61, 83),
+    })
+
+    local TABS = table.freeze({ "Main", "Visual", "Misc", "Settings" })
+    local TWEEN_INFO = TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+    local function corner(parent, radius)
+        local value = Instance.new("UICorner")
+        value.CornerRadius = UDim.new(0, radius)
+        value.Parent = parent
+        return value
+    end
+
+    local function stroke(parent, color, thickness, transparency)
+        local value = Instance.new("UIStroke")
+        value.Color = color
+        value.Thickness = thickness or 1
+        value.Transparency = transparency or 0
+        value.Parent = parent
+        return value
+    end
+
+    local function gradient(parent, first, second, rotation)
+        local value = Instance.new("UIGradient")
+        value.Color = ColorSequence.new(first, second)
+        value.Rotation = rotation or 0
+        value.Parent = parent
+        return value
+    end
+
+    local function animate(instance, properties)
+        TweenService:Create(instance, TWEEN_INFO, properties):Play()
+    end
+
+    local function label(parent, text, size)
+        local value = Instance.new("TextLabel")
+        value.BackgroundTransparency = 1
+        value.Text = text
+        value.TextColor3 = COLORS.text
+        value.Font = Enum.Font.GothamMedium
+        value.TextSize = size or 13
+        value.TextXAlignment = Enum.TextXAlignment.Left
+        value.Parent = parent
+        return value
+    end
+
+    local function addPageLayout(page)
+        local padding = Instance.new("UIPadding")
+        padding.PaddingLeft = UDim.new(0, 14)
+        padding.PaddingRight = UDim.new(0, 14)
+        padding.PaddingTop = UDim.new(0, 13)
+        padding.PaddingBottom = UDim.new(0, 14)
+        padding.Parent = page
+
+        local list = Instance.new("UIListLayout")
+        list.Padding = UDim.new(0, 9)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Parent = page
+    end
+
+    function UI.new(title)
+        local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
+        local previous = playerGui:FindFirstChild("GOATHubSTK")
+        if previous then
+            previous:Destroy()
+        end
+
+        local self = {
+            colors = COLORS,
+            connections = {},
+            cameraConnection = nil,
+            destroyed = false,
+            closeCallback = nil,
+            collapsed = false,
+            dragState = "idle",
+            dragKind = nil,
+            dragInput = nil,
+            dragStart = nil,
+            startCenter = nil,
+            layout = nil,
+            pages = {},
+            tabs = {},
+            activePage = "Main",
+        }
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "GOATHubSTK"
+        gui.ResetOnSpawn = false
+        gui.IgnoreGuiInset = false
+        gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        gui.Parent = playerGui
+        self.gui = gui
+
+        local frame = Instance.new("Frame")
+        frame.Name = "ModernWindow"
+        frame.AnchorPoint = Vector2.new(0.5, 0.5)
+        frame.BackgroundColor3 = COLORS.panel
+        frame.ClipsDescendants = true
+        frame.Parent = gui
+        corner(frame, 14)
+        stroke(frame, COLORS.border, 1, 0.08)
+        gradient(frame, Color3.fromRGB(13, 19, 34), COLORS.panel, 90)
+        self.frame = frame
+
+        local topBar = Instance.new("Frame")
+        topBar.Name = "TopBar"
+        topBar.BackgroundColor3 = COLORS.header
+        topBar.BorderSizePixel = 0
+        topBar.Parent = frame
+        self.topBar = topBar
+
+        local dragHandle = Instance.new("TextButton")
+        dragHandle.Name = "DragHandle"
+        dragHandle.Size = UDim2.new(1, -94, 1, 0)
+        dragHandle.BackgroundTransparency = 1
+        dragHandle.Text = ""
+        dragHandle.AutoButtonColor = false
+        dragHandle.ZIndex = 2
+        dragHandle.Parent = topBar
+        self.dragHandle = dragHandle
+
+        local brand = Instance.new("TextLabel")
+        brand.Name = "Brand"
+        brand.AnchorPoint = Vector2.new(0, 0.5)
+        brand.Position = UDim2.new(0, 12, 0.5, 0)
+        brand.Size = UDim2.fromOffset(32, 32)
+        brand.BackgroundColor3 = COLORS.accent
+        brand.Text = "G"
+        brand.TextColor3 = COLORS.text
+        brand.Font = Enum.Font.GothamBold
+        brand.TextSize = 16
+        brand.Parent = topBar
+        corner(brand, 9)
+        gradient(brand, COLORS.accent, COLORS.accentBright, 35)
+
+        local titleLabel = label(topBar, title or Config.MODERN_UI.TITLE, 14)
+        titleLabel.Name = "Title"
+        titleLabel.Position = UDim2.fromOffset(54, 8)
+        titleLabel.Size = UDim2.new(1, -150, 0, 20)
+        titleLabel.Font = Enum.Font.GothamBold
+
+        local subtitle = label(topBar, "STK  /  CLIENT HUB", 9)
+        subtitle.Name = "Subtitle"
+        subtitle.Position = UDim2.fromOffset(54, 27)
+        subtitle.Size = UDim2.new(1, -150, 0, 15)
+        subtitle.TextColor3 = COLORS.muted
+
+        local minimizeButton = Instance.new("TextButton")
+        minimizeButton.Name = "Minimize"
+        minimizeButton.AnchorPoint = Vector2.new(1, 0.5)
+        minimizeButton.Position = UDim2.new(1, -48, 0.5, 0)
+        minimizeButton.Size = UDim2.fromOffset(34, 30)
+        minimizeButton.BackgroundColor3 = COLORS.surface
+        minimizeButton.Text = "–"
+        minimizeButton.TextColor3 = COLORS.muted
+        minimizeButton.Font = Enum.Font.GothamBold
+        minimizeButton.TextSize = 19
+        minimizeButton.ZIndex = 3
+        minimizeButton.Parent = topBar
+        corner(minimizeButton, 9)
+        stroke(minimizeButton, COLORS.border, 1, 0.2)
+        self.minimizeButton = minimizeButton
+
+        local closeButton = Instance.new("TextButton")
+        closeButton.Name = "Close"
+        closeButton.AnchorPoint = Vector2.new(1, 0.5)
+        closeButton.Position = UDim2.new(1, -10, 0.5, 0)
+        closeButton.Size = UDim2.fromOffset(34, 30)
+        closeButton.BackgroundColor3 = COLORS.surface
+        closeButton.Text = "×"
+        closeButton.TextColor3 = COLORS.red
+        closeButton.Font = Enum.Font.GothamBold
+        closeButton.TextSize = 19
+        closeButton.ZIndex = 3
+        closeButton.Parent = topBar
+        corner(closeButton, 9)
+        stroke(closeButton, COLORS.border, 1, 0.2)
+        self.closeButton = closeButton
+
+        local tabBar = Instance.new("Frame")
+        tabBar.Name = "Navigation"
+        tabBar.BackgroundColor3 = COLORS.surface
+        tabBar.BorderSizePixel = 0
+        tabBar.Parent = frame
+        self.tabBar = tabBar
+
+        local tabsContainer = Instance.new("Frame")
+        tabsContainer.Name = "TabsContainer"
+        tabsContainer.Position = UDim2.fromOffset(12, 6)
+        tabsContainer.Size = UDim2.new(1, -24, 1, -11)
+        tabsContainer.BackgroundTransparency = 1
+        tabsContainer.Parent = tabBar
+
+        local tabList = Instance.new("UIListLayout")
+        tabList.FillDirection = Enum.FillDirection.Horizontal
+        tabList.Padding = UDim.new(0, 4)
+        tabList.SortOrder = Enum.SortOrder.LayoutOrder
+        tabList.Parent = tabsContainer
+
+        local pageHost = Instance.new("Frame")
+        pageHost.Name = "Pages"
+        pageHost.BackgroundTransparency = 1
+        pageHost.ClipsDescendants = true
+        pageHost.Parent = frame
+        self.pageHost = pageHost
+
+        for index, pageName in ipairs(TABS) do
+            local button = Instance.new("TextButton")
+            button.Name = pageName
+            button.Size = UDim2.new(0.25, -3, 1, 0)
+            button.BackgroundColor3 = COLORS.card
+            button.BackgroundTransparency = 1
+            button.Text = pageName
+            button.TextColor3 = COLORS.muted
+            button.Font = Enum.Font.GothamBold
+            button.TextSize = 12
+            button.AutoButtonColor = false
+            button.LayoutOrder = index
+            button.Parent = tabsContainer
+            corner(button, 8)
+
+            local indicator = Instance.new("Frame")
+            indicator.Name = "Indicator"
+            indicator.AnchorPoint = Vector2.new(0.5, 1)
+            indicator.Position = UDim2.new(0.5, 0, 1, 0)
+            indicator.Size = UDim2.new(0.42, 0, 0, 2)
+            indicator.BackgroundColor3 = COLORS.accentBright
+            indicator.BorderSizePixel = 0
+            indicator.Visible = false
+            indicator.Parent = button
+            corner(indicator, 2)
+
+            local page = Instance.new("ScrollingFrame")
+            page.Name = pageName .. "Page"
+            page.Size = UDim2.fromScale(1, 1)
+            page.BackgroundTransparency = 1
+            page.BorderSizePixel = 0
+            page.CanvasSize = UDim2.new()
+            page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+            page.ScrollingDirection = Enum.ScrollingDirection.Y
+            page.ScrollBarThickness = 3
+            page.ScrollBarImageColor3 = COLORS.accent
+            page.Visible = false
+            page.Parent = pageHost
+            addPageLayout(page)
+
+            self.tabs[pageName] = {
+                button = button,
+                indicator = indicator,
+            }
+            self.pages[pageName] = page
+            table.insert(self.connections, button.Activated:Connect(function()
+                self:selectPage(pageName)
+            end))
+        end
+        self.content = self.pages.Main
+
+        local statusBar = Instance.new("Frame")
+        statusBar.Name = "StatusBar"
+        statusBar.BackgroundColor3 = COLORS.background
+        statusBar.BorderSizePixel = 0
+        statusBar.Parent = frame
+        self.statusBar = statusBar
+
+        local statusDot = Instance.new("Frame")
+        statusDot.AnchorPoint = Vector2.new(0, 0.5)
+        statusDot.Position = UDim2.new(0, 14, 0.5, 0)
+        statusDot.Size = UDim2.fromOffset(7, 7)
+        statusDot.BackgroundColor3 = COLORS.green
+        statusDot.BorderSizePixel = 0
+        statusDot.Parent = statusBar
+        corner(statusDot, 7)
+
+        local statusLabel = label(statusBar, "GOATHubSTK iniciado", 11)
+        statusLabel.Name = "Status"
+        statusLabel.Position = UDim2.fromOffset(29, 0)
+        statusLabel.Size = UDim2.new(1, -42, 1, 0)
+        statusLabel.TextColor3 = COLORS.muted
+        statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        self.statusLabel = statusLabel
+
+        local function currentViewport()
+            local camera = Workspace.CurrentCamera
+            return camera and camera.ViewportSize or Vector2.new(800, 600)
+        end
+
+        function self:selectPage(pageName)
+            if not self.pages[pageName] then
+                return
+            end
+            self.activePage = pageName
+            for name, page in pairs(self.pages) do
+                local selected = name == pageName
+                page.Visible = selected and not self.collapsed
+                local tab = self.tabs[name]
+                tab.indicator.Visible = selected
+                animate(tab.button, {
+                    BackgroundTransparency = selected and 0 or 1,
+                    TextColor3 = selected and COLORS.text or COLORS.muted,
+                })
+            end
+        end
+
+        function self:setStatus(message)
+            if not self.destroyed and self.statusLabel and self.statusLabel.Parent then
+                self.statusLabel.Text = tostring(message)
+            end
+        end
+
+        function self:_applyLayout(resetCenter)
+            if self.destroyed then
+                return
+            end
+            local viewport = currentViewport()
+            local calculated = Layout.calculate(viewport, Config.MODERN_UI)
+            local effectiveHeight = self.collapsed and calculated.headerHeight or calculated.height
+            local centerX = resetCenter and calculated.centerX or self.frame.Position.X.Offset
+            local centerY = resetCenter and calculated.centerY or self.frame.Position.Y.Offset
+            if resetCenter and not self.collapsed then
+                centerX, centerY = Layout.clampCenter(
+                    centerX,
+                    centerY,
+                    calculated.width,
+                    effectiveHeight,
+                    viewport,
+                    calculated.padding
+                )
+            else
+                centerX, centerY = Layout.clampDragCenter(
+                    centerX,
+                    centerY,
+                    calculated.width,
+                    effectiveHeight,
+                    viewport,
+                    calculated.padding,
+                    calculated.headerHeight
+                )
+            end
+
+            self.layout = calculated
+            self.frame.Size = UDim2.fromOffset(calculated.width, effectiveHeight)
+            self.frame.Position = UDim2.fromOffset(centerX, centerY)
+            self.topBar.Size = UDim2.new(1, 0, 0, calculated.headerHeight)
+            self.tabBar.Position = UDim2.fromOffset(0, calculated.headerHeight)
+            self.tabBar.Size = UDim2.new(1, 0, 0, Config.MODERN_UI.TAB_HEIGHT)
+            self.pageHost.Position = UDim2.fromOffset(
+                0,
+                calculated.headerHeight + Config.MODERN_UI.TAB_HEIGHT
+            )
+            if self.collapsed then
+                self.pageHost.Size = UDim2.new(1, 0, 0, 0)
+            else
+                self.pageHost.Size = UDim2.new(
+                    1,
+                    0,
+                    1,
+                    -(calculated.headerHeight + Config.MODERN_UI.TAB_HEIGHT + Config.MODERN_UI.STATUS_HEIGHT)
+                )
+            end
+            self.statusBar.AnchorPoint = Vector2.new(0, 1)
+            self.statusBar.Position = UDim2.fromScale(0, 1)
+            self.statusBar.Size = UDim2.new(1, 0, 0, Config.MODERN_UI.STATUS_HEIGHT)
+            self.tabBar.Visible = not self.collapsed
+            self.pageHost.Visible = not self.collapsed
+            self.statusBar.Visible = not self.collapsed
+            self:selectPage(self.activePage)
+        end
+
+        function self:_bindCamera()
+            if self.cameraConnection then
+                self.cameraConnection:Disconnect()
+                self.cameraConnection = nil
+            end
+            local camera = Workspace.CurrentCamera
+            if camera then
+                self.cameraConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+                    self:_applyLayout(false)
+                end)
+            end
+            self:_applyLayout(false)
+        end
+
+        local function finishDrag(input)
+            local finishedMouse = self.dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseButton1
+            local finishedTouch = self.dragKind == "touch" and input == self.dragInput
+            if not finishedMouse and not finishedTouch then
+                return
+            end
+            self.dragState = "idle"
+            self.dragKind = nil
+            self.dragInput = nil
+            self.dragStart = nil
+            self.startCenter = nil
+        end
+
+        table.insert(self.connections, dragHandle.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch
+            then
+                return
+            end
+            self.dragState = "pressed"
+            self.dragKind = input.UserInputType == Enum.UserInputType.Touch and "touch" or "mouse"
+            self.dragInput = self.dragKind == "touch" and input or nil
+            self.dragStart = input.Position
+            self.startCenter = Vector2.new(frame.Position.X.Offset, frame.Position.Y.Offset)
+        end))
+
+        table.insert(self.connections, UserInputService.InputChanged:Connect(function(input)
+            local movingMouse = self.dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseMovement
+            local movingTouch = self.dragKind == "touch" and input == self.dragInput
+            if self.dragState == "idle" or (not movingMouse and not movingTouch) then
+                return
+            end
+            local delta = input.Position - self.dragStart
+            if self.dragState == "pressed" and delta.Magnitude >= 5 then
+                self.dragState = "dragging"
+            end
+            if self.dragState ~= "dragging" then
+                return
+            end
+
+            local viewport = currentViewport()
+            local effectiveHeight = self.collapsed and self.layout.headerHeight or self.layout.height
+            local x, y = Layout.clampDragCenter(
+                self.startCenter.X + delta.X,
+                self.startCenter.Y + delta.Y,
+                self.layout.width,
+                effectiveHeight,
+                viewport,
+                self.layout.padding,
+                self.layout.headerHeight
+            )
+            frame.Position = UDim2.fromOffset(x, y)
+        end))
+
+        table.insert(self.connections, UserInputService.InputEnded:Connect(finishDrag))
+        table.insert(self.connections, Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+            self:_bindCamera()
+        end))
+        table.insert(self.connections, closeButton.Activated:Connect(function()
+            if self.closeCallback then
+                self.closeCallback()
+            end
+        end))
+        table.insert(self.connections, minimizeButton.Activated:Connect(function()
+            local currentHeight = self.frame.Size.Y.Offset
+            local top = self.frame.Position.Y.Offset - currentHeight / 2
+            self.collapsed = not self.collapsed
+            minimizeButton.Text = self.collapsed and "+" or "–"
+            local nextHeight = self.collapsed and self.layout.headerHeight or self.layout.height
+            self.frame.Position = UDim2.fromOffset(
+                self.frame.Position.X.Offset,
+                top + nextHeight / 2
+            )
+            self:_applyLayout(false)
+        end))
+
+        function self:getPage(pageName)
+            return self.pages[pageName]
+        end
+
+        function self:setCloseCallback(callback)
+            self.closeCallback = callback
+        end
+
+        function self:Destroy()
+            if self.destroyed then
+                return
+            end
+            self.destroyed = true
+            self.dragState = "idle"
+            self.dragKind = nil
+            self.dragInput = nil
+            if self.cameraConnection then
+                self.cameraConnection:Disconnect()
+                self.cameraConnection = nil
+            end
+            for _, connection in ipairs(self.connections) do
+                connection:Disconnect()
+            end
+            table.clear(self.connections)
+            table.clear(self.pages)
+            table.clear(self.tabs)
+            if self.gui then
+                self.gui:Destroy()
+                self.gui = nil
+            end
+        end
+
+        self:_applyLayout(true)
+        self:_bindCamera()
+        self:selectPage("Main")
+        return self
+    end
+
+    function UI.section(parent, text)
+        local section = Instance.new("Frame")
+        section.Size = UDim2.new(1, 0, 0, 25)
+        section.BackgroundTransparency = 1
+        section.Parent = parent
+
+        local title = label(section, string.upper(text), 10)
+        title.Size = UDim2.new(0.46, 0, 1, 0)
+        title.TextColor3 = COLORS.muted
+        title.Font = Enum.Font.GothamBold
+
+        local line = Instance.new("Frame")
+        line.AnchorPoint = Vector2.new(1, 0.5)
+        line.Position = UDim2.new(1, 0, 0.5, 0)
+        line.Size = UDim2.new(0.52, 0, 0, 1)
+        line.BackgroundColor3 = COLORS.border
+        line.BackgroundTransparency = 0.25
+        line.BorderSizePixel = 0
+        line.Parent = section
+        return section
+    end
+
+    function UI.info(parent, text, height)
+        local value = label(parent, text, 11)
+        value.Size = UDim2.new(1, 0, 0, height or 42)
+        value.BackgroundColor3 = COLORS.surface
+        value.BackgroundTransparency = 0.12
+        value.TextColor3 = COLORS.muted
+        value.TextWrapped = true
+        value.TextYAlignment = Enum.TextYAlignment.Center
+        value.Parent = parent
+        corner(value, 9)
+        stroke(value, COLORS.border, 1, 0.3)
+
+        local padding = Instance.new("UIPadding")
+        padding.PaddingLeft = UDim.new(0, 12)
+        padding.PaddingRight = UDim.new(0, 12)
+        padding.Parent = value
+        return value
+    end
+
+    function UI.button(parent, text, color, height)
+        local button = Instance.new("TextButton")
+        button.Size = UDim2.new(1, 0, 0, height or 42)
+        button.BackgroundColor3 = color or COLORS.card
+        button.AutoButtonColor = false
+        button.Text = text
+        button.TextColor3 = COLORS.text
+        button.Font = Enum.Font.GothamBold
+        button.TextSize = 12
+        button.Parent = parent
+        corner(button, 10)
+        stroke(button, COLORS.border, 1, 0.2)
+
+        button.MouseEnter:Connect(function()
+            animate(button, { BackgroundColor3 = COLORS.cardHover })
+        end)
+        button.MouseLeave:Connect(function()
+            animate(button, { BackgroundColor3 = color or COLORS.card })
+        end)
+        return button
+    end
+
+    function UI.checkbox(parent, text, initial, callback)
+        local row = Instance.new("TextButton")
+        row.Size = UDim2.new(1, 0, 0, 46)
+        row.BackgroundColor3 = COLORS.card
+        row.AutoButtonColor = false
+        row.Text = ""
+        row.Parent = parent
+        corner(row, 10)
+        stroke(row, COLORS.border, 1, 0.22)
+
+        local title = label(row, text, 12)
+        title.Position = UDim2.fromOffset(13, 0)
+        title.Size = UDim2.new(1, -82, 1, 0)
+        title.TextColor3 = COLORS.text
+        title.Font = Enum.Font.GothamMedium
+
+        local track = Instance.new("Frame")
+        track.AnchorPoint = Vector2.new(1, 0.5)
+        track.Position = UDim2.new(1, -12, 0.5, 0)
+        track.Size = UDim2.fromOffset(42, 23)
+        track.BackgroundColor3 = COLORS.track
+        track.Parent = row
+        corner(track, 12)
+
+        local knob = Instance.new("Frame")
+        knob.AnchorPoint = Vector2.new(0, 0.5)
+        knob.Size = UDim2.fromOffset(17, 17)
+        knob.BackgroundColor3 = COLORS.text
+        knob.Parent = track
+        corner(knob, 9)
+
+        local checked = initial == true
+        local function render(animated)
+            local trackColor = checked and COLORS.accent or COLORS.track
+            local knobPosition = UDim2.new(0, checked and 22 or 3, 0.5, 0)
+            if animated then
+                animate(track, { BackgroundColor3 = trackColor })
+                animate(knob, { Position = knobPosition })
+            else
+                track.BackgroundColor3 = trackColor
+                knob.Position = knobPosition
+            end
+        end
+        render(false)
+
+        row.MouseEnter:Connect(function()
+            animate(row, { BackgroundColor3 = COLORS.cardHover })
+        end)
+        row.MouseLeave:Connect(function()
+            animate(row, { BackgroundColor3 = COLORS.card })
+        end)
+        row.Activated:Connect(function()
+            checked = not checked
+            render(true)
+            callback(checked)
+        end)
+        return row
+    end
+
+    function UI.numberInput(parent, text, initial, minimum, maximum, callback)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 50)
+        row.BackgroundColor3 = COLORS.card
+        row.Parent = parent
+        corner(row, 10)
+        stroke(row, COLORS.border, 1, 0.22)
+
+        local title = label(row, text, 11)
+        title.Position = UDim2.fromOffset(13, 0)
+        title.Size = UDim2.new(1, -126, 1, 0)
+        title.TextColor3 = COLORS.text
+
+        local box = Instance.new("TextBox")
+        box.AnchorPoint = Vector2.new(1, 0.5)
+        box.Position = UDim2.new(1, -11, 0.5, 0)
+        box.Size = UDim2.fromOffset(98, 31)
+        box.BackgroundColor3 = COLORS.background
+        box.TextColor3 = COLORS.accentBright
+        box.PlaceholderColor3 = COLORS.muted
+        box.ClearTextOnFocus = false
+        box.Font = Enum.Font.GothamBold
+        box.TextSize = 12
+        box.Text = tostring(initial)
+        box.Parent = row
+        corner(box, 8)
+        stroke(box, COLORS.border, 1, 0.12)
+
+        local value = math.clamp(tonumber(initial) or minimum, minimum, maximum)
+        local function commit()
+            value = math.clamp(tonumber(box.Text) or value, minimum, maximum)
+            box.Text = tostring(math.floor(value + 0.5))
+            callback(value)
+        end
+        box.FocusLost:Connect(commit)
+        return row, box
+    end
+
+    return UI
 end
 
 __factories["UI/UI"] = function()
@@ -2892,11 +3793,17 @@ __factories["init"] = function()
     local Config = __require("Config")
     local MovementCoordinator = __require("Core/MovementCoordinator")
     local MapProvider = __require("Providers/MapProvider")
-    local UI = __require("UI/UI")
+    local UI
+    if Config.UI_STYLE == "Legacy" then
+        UI = __require("UI/UI")
+    else
+        UI = __require("UI/ModernUI")
+    end
     local AutoEscape = __require("Features/AutoEscape")
     local KillAll = __require("Features/KillAll")
     local AutoRevive = __require("Features/AutoRevive")
     local TeamESP = __require("Features/TeamESP")
+    local LootESP = __require("Features/LootESP")
     local AutoLoot = __require("Features/AutoLoot")
     local AutoEvade = __require("Features/AutoEvade")
     local AttributeOverrides = __require("Features/AttributeOverrides")
@@ -2952,8 +3859,18 @@ __factories["init"] = function()
         local movement = MovementCoordinator.new()
         local mapProvider = MapProvider.new()
         local stateStore = StateStore.new()
-        local window = UI.new(Config.UI.TITLE)
-        local content = window.content
+        local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
+        local window = UI.new(uiConfig.TITLE)
+        local function getPage(pageName)
+            if typeof(window.getPage) == "function" then
+                return window:getPage(pageName)
+            end
+            return window.content
+        end
+        local mainPage = getPage("Main")
+        local visualPage = getPage("Visual")
+        local miscPage = getPage("Misc")
+        local settingsPage = getPage("Settings")
         local layoutOrder = 0
 
         app.movement = movement
@@ -2967,23 +3884,30 @@ __factories["init"] = function()
             return instance
         end
 
-        local status = contentItem(UI.info(content, "GOATHubSTK iniciado", 42))
-        status.TextColor3 = window.colors.text
+        local status = window.statusLabel
+        if not status then
+            status = contentItem(UI.info(mainPage, "GOATHubSTK iniciado", 42))
+            status.TextColor3 = window.colors.text
+        end
         app.status = status
 
         local function setStatus(message)
-            if not app.destroyed and status.Parent then
-                status.Text = tostring(message)
+            if not app.destroyed then
+                if typeof(window.setStatus) == "function" then
+                    window:setStatus(message)
+                elseif status.Parent then
+                    status.Text = tostring(message)
+                end
             end
         end
 
         local restoreActions = {}
-        local function persistentCheckbox(label, key, apply, defaultValue)
+        local function persistentCheckbox(parent, label, key, apply, defaultValue)
             local initial = stateStore:getBoolean(key, defaultValue)
             if not stateStore:has(key) then
                 stateStore:setBoolean(key, initial)
             end
-            contentItem(UI.checkbox(content, label, initial, function(enabled)
+            contentItem(UI.checkbox(parent, label, initial, function(enabled)
                 stateStore:setBoolean(key, enabled)
                 apply(enabled)
             end))
@@ -3025,6 +3949,7 @@ __factories["init"] = function()
         local killAll = KillAll.new(movement, setStatus)
         local autoRevive = AutoRevive.new(movement, setStatus)
         local teamESP = TeamESP.new(setStatus)
+        local lootESP = LootESP.new(mapProvider, setStatus)
         local autoLoot = AutoLoot.new(movement, mapProvider, setStatus)
         local autoEvade = AutoEvade.new(movement, mapProvider, setStatus)
         local attributeOverrides = AttributeOverrides.new(setStatus)
@@ -3036,6 +3961,7 @@ __factories["init"] = function()
             killAll,
             autoRevive,
             teamESP,
+            lootESP,
             autoLoot,
             autoEvade,
             attributeOverrides,
@@ -3043,26 +3969,21 @@ __factories["init"] = function()
             autoServerHop,
         }
 
-        contentItem(UI.section(content, "RODADA"))
-        persistentCheckbox("Auto Escape", "feature.autoEscape", function(enabled)
+        contentItem(UI.section(mainPage, "RODADA"))
+        persistentCheckbox(mainPage, "Auto Escape", "feature.autoEscape", function(enabled)
             autoEscape:setEnabled(enabled)
         end)
-        persistentCheckbox("Kill All (somente Killer)", "feature.killAll", function(enabled)
+        persistentCheckbox(mainPage, "Kill All (somente Killer)", "feature.killAll", function(enabled)
             killAll:setEnabled(enabled)
         end)
-        persistentCheckbox("Auto Revive / buscar ajuda", "feature.autoRevive", function(enabled)
+        persistentCheckbox(mainPage, "Auto Revive / buscar ajuda", "feature.autoRevive", function(enabled)
             autoRevive:setEnabled(enabled)
         end)
-
-        contentItem(UI.section(content, "VISUAL E LOOT"))
-        persistentCheckbox("Team ESP — azul/vermelho", "feature.teamESP", function(enabled)
-            teamESP:setEnabled(enabled)
-        end)
-        persistentCheckbox("Auto Collect Loot", "feature.autoLoot", function(enabled)
+        persistentCheckbox(mainPage, "Auto Collect Loot", "feature.autoLoot", function(enabled)
             autoLoot:setEnabled(enabled)
         end)
 
-        contentItem(UI.section(content, "SEGURANCA DO SURVIVOR"))
+        contentItem(UI.section(mainPage, "SEGURANCA DO SURVIVOR"))
         local evadeDistance = stateStore:getNumber(
             "value.evadeDistance",
             Config.DISTANCES.KILLER_EVADE,
@@ -3075,7 +3996,7 @@ __factories["init"] = function()
         autoEvade:setDistance(evadeDistance)
         autoRevive:setDangerDistance(evadeDistance)
         contentItem(UI.numberInput(
-            content,
+            mainPage,
             "Fugir quando Killer estiver a (studs)",
             evadeDistance,
             15,
@@ -3087,31 +4008,51 @@ __factories["init"] = function()
                 setStatus("Distancia de seguranca: " .. tostring(math.floor(distance + 0.5)) .. " studs")
             end
         ))
-        persistentCheckbox("Auto Fugir do Killer", "feature.autoEvade", function(enabled)
+        persistentCheckbox(mainPage, "Auto Fugir do Killer", "feature.autoEvade", function(enabled)
             autoEvade:setEnabled(enabled)
         end)
 
-        contentItem(UI.section(content, "DESBLOQUEIOS LOCAIS"))
-        persistentCheckbox("Unlock All Gamepasses", "feature.unlockAllGamepasses", function(enabled)
+        contentItem(UI.section(visualPage, "ESP E DESTAQUES"))
+        persistentCheckbox(visualPage, "Team ESP — azul/vermelho", "feature.teamESP", function(enabled)
+            teamESP:setEnabled(enabled)
+        end)
+        persistentCheckbox(visualPage, "Loot ESP — dourado", "feature.lootESP", function(enabled)
+            lootESP:setEnabled(enabled)
+        end)
+        local lootESPNote = contentItem(UI.info(
+            visualPage,
+            "Mostra somente loot visivel e remove o destaque assim que o item for coletado.",
+            42
+        ))
+        lootESPNote.TextColor3 = window.colors.muted
+
+        contentItem(UI.section(visualPage, "CAMERA"))
+        persistentCheckbox(visualPage, "Remover mudancas de FOV (fixar 70)", "feature.fovOverride", function(enabled)
+            fovOverride:setEnabled(enabled)
+        end)
+
+        contentItem(UI.section(miscPage, "DESBLOQUEIOS LOCAIS"))
+        persistentCheckbox(miscPage, "Unlock All Gamepasses", "feature.unlockAllGamepasses", function(enabled)
             for _, attribute in ipairs(Config.ATTRIBUTE_OVERRIDES.GAMEPASSES) do
                 attributeOverrides:setOverride("Gamepasses", attribute, enabled, "unlockAllGamepasses")
             end
         end)
-        persistentCheckbox("Pulo Duplo 2x", "feature.doubleJump", function(enabled)
+        persistentCheckbox(miscPage, "Pulo Duplo 2x", "feature.doubleJump", function(enabled)
             attributeOverrides:setOverride("Gamepasses", "DoubleJump", enabled, "doubleJump")
             attributeOverrides:setOverride("Settings", "double_jump", enabled, "doubleJump")
         end)
-        persistentCheckbox("Chance de Killer 3x", "feature.killerChance3x", function(enabled)
+        persistentCheckbox(miscPage, "Chance de Killer 3x", "feature.killerChance3x", function(enabled)
             attributeOverrides:setOverride("Gamepasses", "IncreasedKillerChange", enabled, "killerChance3x")
             attributeOverrides:setOverride("Settings", "killer_chance_3x", enabled, "killerChance3x")
         end)
+        local localOverrideNote = contentItem(UI.info(
+            miscPage,
+            "Overrides locais e restauraveis; validacoes feitas pelo servidor continuam dependendo do jogo.",
+            42
+        ))
+        localOverrideNote.TextColor3 = window.colors.muted
 
-        contentItem(UI.section(content, "CAMERA"))
-        persistentCheckbox("Remover mudancas de FOV (fixar 70)", "feature.fovOverride", function(enabled)
-            fovOverride:setEnabled(enabled)
-        end)
-
-        contentItem(UI.section(content, "AUTO REJOIN / SERVER HOP"))
+        contentItem(UI.section(settingsPage, "AUTO REJOIN / SERVER HOP"))
         local savedLevelLimit = stateStore:getNumber(
             "value.serverHopLevel",
             autoServerHop:getLevelLimit(),
@@ -3128,7 +4069,7 @@ __factories["init"] = function()
         end
         autoServerHop:setLevelLimit(savedLevelLimit)
         contentItem(UI.numberInput(
-            content,
+            settingsPage,
             "Trocar se outro jogador tiver nivel >=",
             savedLevelLimit,
             Config.SERVER_HOP.MIN_LEVEL_LIMIT,
@@ -3144,6 +4085,7 @@ __factories["init"] = function()
             end
         ))
         persistentCheckbox(
+            settingsPage,
             "Auto Rejoin por quantidade/nivel",
             "feature.autoServerHop",
             function(enabled)
@@ -3152,7 +4094,7 @@ __factories["init"] = function()
             autoServerHop:shouldResume()
         )
         local serverHopNote = contentItem(UI.info(
-            content,
+            settingsPage,
             "Ignora seu proprio nivel. Guarda os ultimos 10 JobIds e exige pelo menos outro jogador.",
             34
         ))
@@ -3195,7 +4137,8 @@ __factories["init"] = function()
             end
         end
 
-        local closeButton = contentItem(UI.button(content, "Fechar GOAT Hub STK", window.colors.card, 36))
+        contentItem(UI.section(settingsPage, "SESSAO"))
+        local closeButton = contentItem(UI.button(settingsPage, "Fechar GOAT Hub STK", window.colors.card, 42))
         closeButton.Activated:Connect(function()
             app:Destroy()
         end)
