@@ -25,12 +25,14 @@ local __config = (function()
 
         MODERN_UI = table.freeze({
             TITLE = "GOAT Hub — STK",
-            PADDING = 12,
+            PADDING = 6,
             DESKTOP_WIDTH = 660,
             DESKTOP_HEIGHT = 520,
             COMPACT_WIDTH = 570,
             COMPACT_BREAKPOINT = 520,
             NARROW_BREAKPOINT = 620,
+            MIN_WIDTH = 300,
+            DEFAULT_WIDTH_PERCENT = 50,
             HEADER_HEIGHT = 54,
             COMPACT_HEADER_HEIGHT = 48,
             TAB_HEIGHT = 44,
@@ -130,6 +132,128 @@ end
 local __factories = {}
 local __cache = { Config = __config }
 local __require
+
+__factories["Core/ExecutorSettings"] = function()
+    local HttpService = game:GetService("HttpService")
+
+    local Config = __require("Config")
+
+    local ExecutorSettings = {}
+    ExecutorSettings.__index = ExecutorSettings
+
+    local DIRECTORY = "GOATHub"
+    local FILE_PATH = DIRECTORY .. "/settings.json"
+    local FILE_VERSION = 1
+    local MAX_FILE_BYTES = 4096
+    local WIDTH_PERCENTAGES = {
+        [25] = true,
+        [50] = true,
+        [75] = true,
+        [100] = true,
+    }
+
+    local function validWidthPercent(value)
+        return typeof(value) == "number"
+            and value % 1 == 0
+            and WIDTH_PERCENTAGES[value] == true
+    end
+
+    function ExecutorSettings.new()
+        local defaultWidth = Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
+        if not validWidthPercent(defaultWidth) then
+            defaultWidth = 50
+        end
+
+        local self = setmetatable({
+            widthPercent = defaultWidth,
+            persistent = typeof(writefile) == "function" and typeof(makefolder) == "function",
+            loaded = false,
+        }, ExecutorSettings)
+        self.loaded = self:_load()
+        if not self.loaded and self.persistent then
+            self:_save()
+        end
+        return self
+    end
+
+    function ExecutorSettings:_ensureDirectory()
+        if typeof(makefolder) ~= "function" then
+            return false
+        end
+        if typeof(isfolder) == "function" then
+            local checked, exists = pcall(isfolder, DIRECTORY)
+            if checked and exists then
+                return true
+            end
+        end
+        return pcall(makefolder, DIRECTORY)
+    end
+
+    function ExecutorSettings:_load()
+        if typeof(readfile) ~= "function" then
+            return false
+        end
+        local readOk, source = pcall(readfile, FILE_PATH)
+        if not readOk or typeof(source) ~= "string" or #source == 0 or #source > MAX_FILE_BYTES then
+            return false
+        end
+
+        local decodedOk, decoded = pcall(function()
+            return HttpService:JSONDecode(source)
+        end)
+        if not decodedOk
+            or typeof(decoded) ~= "table"
+            or decoded.version ~= FILE_VERSION
+            or typeof(decoded.ui) ~= "table"
+            or not validWidthPercent(decoded.ui.widthPercent)
+        then
+            return false
+        end
+        self.widthPercent = decoded.ui.widthPercent
+        return true
+    end
+
+    function ExecutorSettings:_save()
+        if not self.persistent or not self:_ensureDirectory() then
+            return false
+        end
+        local encodedOk, encoded = pcall(function()
+            return HttpService:JSONEncode({
+                version = FILE_VERSION,
+                ui = {
+                    widthPercent = self.widthPercent,
+                },
+            })
+        end)
+        if not encodedOk or typeof(encoded) ~= "string" or #encoded > MAX_FILE_BYTES then
+            return false
+        end
+        return pcall(writefile, FILE_PATH, encoded)
+    end
+
+    function ExecutorSettings:getWidthPercent()
+        return self.widthPercent
+    end
+
+    function ExecutorSettings:setWidthPercent(value)
+        value = tonumber(value)
+        if not validWidthPercent(value) then
+            return false
+        end
+        self.widthPercent = value
+        return self:_save()
+    end
+
+    function ExecutorSettings:isPersistent()
+        return self.persistent
+    end
+
+    function ExecutorSettings:getPath()
+        return FILE_PATH
+    end
+
+    return ExecutorSettings
+end
 
 __factories["Core/LootVisibility"] = function()
     local LootVisibility = {}
@@ -2587,30 +2711,63 @@ end
 __factories["UI/Layout"] = function()
     local Layout = {}
 
-    function Layout.calculate(viewport, config)
+    local WIDTH_PERCENTAGES = {
+        [25] = true,
+        [50] = true,
+        [75] = true,
+        [100] = true,
+    }
+
+    function Layout.normalizeWidthPercent(value, defaultValue)
+        value = tonumber(value)
+        if WIDTH_PERCENTAGES[value] then
+            return value
+        end
+        defaultValue = tonumber(defaultValue)
+        if WIDTH_PERCENTAGES[defaultValue] then
+            return defaultValue
+        end
+        return 50
+    end
+
+    function Layout.calculate(viewport, config, widthPercent)
         local padding = config.PADDING
         local availableWidth = math.max(1, viewport.X - padding * 2)
         local availableHeight = math.max(1, viewport.Y - padding * 2)
-        local narrow = viewport.X <= config.NARROW_BREAKPOINT
-        local compact = narrow or viewport.Y <= config.COMPACT_BREAKPOINT
 
         local requestedWidth
+        local width
+        local narrow
+        local compact
         local mode
-        if narrow then
-            requestedWidth = config.DESKTOP_WIDTH
-            mode = "narrow"
-        elseif compact then
-            requestedWidth = config.COMPACT_WIDTH
-            mode = "compact"
+        if widthPercent ~= nil then
+            local normalized = Layout.normalizeWidthPercent(widthPercent, config.DEFAULT_WIDTH_PERCENT)
+            requestedWidth = availableWidth * normalized / 100
+            local minimumWidth = math.min(config.MIN_WIDTH or 1, availableWidth)
+            width = math.clamp(math.floor(requestedWidth + 0.5), minimumWidth, availableWidth)
+            narrow = width <= config.NARROW_BREAKPOINT
+            compact = narrow or viewport.Y <= config.COMPACT_BREAKPOINT
+            mode = narrow and "narrow" or (compact and "compact" or "desktop")
         else
-            requestedWidth = config.DESKTOP_WIDTH
-            mode = "desktop"
+            narrow = viewport.X <= config.NARROW_BREAKPOINT
+            compact = narrow or viewport.Y <= config.COMPACT_BREAKPOINT
+            if narrow then
+                requestedWidth = config.DESKTOP_WIDTH
+                mode = "narrow"
+            elseif compact then
+                requestedWidth = config.COMPACT_WIDTH
+                mode = "compact"
+            else
+                requestedWidth = config.DESKTOP_WIDTH
+                mode = "desktop"
+            end
+            width = math.min(requestedWidth, availableWidth)
         end
 
         return {
             mode = mode,
             padding = padding,
-            width = math.min(requestedWidth, availableWidth),
+            width = width,
             height = math.min(config.DESKTOP_HEIGHT, availableHeight),
             centerX = viewport.X / 2,
             centerY = viewport.Y / 2,
@@ -2753,7 +2910,8 @@ __factories["UI/ModernUI"] = function()
         list.Parent = page
     end
 
-    function UI.new(title)
+    function UI.new(title, options)
+        options = typeof(options) == "table" and options or {}
         local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
         local previous = playerGui:FindFirstChild("GOATHubSTK")
         if previous then
@@ -2776,12 +2934,19 @@ __factories["UI/ModernUI"] = function()
             pages = {},
             tabs = {},
             activePage = "Main",
+            widthPercent = Layout.normalizeWidthPercent(
+                options.widthPercent,
+                Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
+            ),
         }
 
         local gui = Instance.new("ScreenGui")
         gui.Name = "GOATHubSTK"
         gui.ResetOnSpawn = false
-        gui.IgnoreGuiInset = false
+        gui.IgnoreGuiInset = true
+        pcall(function()
+            gui.ScreenInsets = Enum.ScreenInsets.None
+        end)
         gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         gui.Parent = playerGui
         self.gui = gui
@@ -3002,12 +3167,24 @@ __factories["UI/ModernUI"] = function()
             end
         end
 
+        function self:setWidthPercent(value)
+            local normalized = Layout.normalizeWidthPercent(value, Config.MODERN_UI.DEFAULT_WIDTH_PERCENT)
+            if tonumber(value) ~= normalized then
+                return false
+            end
+            if self.widthPercent ~= normalized then
+                self.widthPercent = normalized
+                self:_applyLayout(false)
+            end
+            return true
+        end
+
         function self:_applyLayout(resetCenter)
             if self.destroyed then
                 return
             end
             local viewport = currentViewport()
-            local calculated = Layout.calculate(viewport, Config.MODERN_UI)
+            local calculated = Layout.calculate(viewport, Config.MODERN_UI, self.widthPercent)
             local effectiveHeight = self.collapsed and calculated.headerHeight or calculated.height
             local centerX = resetCenter and calculated.centerX or self.frame.Position.X.Offset
             local centerY = resetCenter and calculated.centerY or self.frame.Position.Y.Offset
@@ -3310,6 +3487,88 @@ __factories["UI/ModernUI"] = function()
             render(true)
             callback(checked)
         end)
+        return row
+    end
+
+    function UI.segmented(parent, text, options, initial, callback)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 78)
+        row.BackgroundColor3 = COLORS.card
+        row.Parent = parent
+        corner(row, 10)
+        stroke(row, COLORS.border, 1, 0.22)
+
+        local title = label(row, text, 11)
+        title.Position = UDim2.fromOffset(13, 5)
+        title.Size = UDim2.new(1, -26, 0, 24)
+        title.TextColor3 = COLORS.text
+
+        local selector = Instance.new("Frame")
+        selector.Position = UDim2.fromOffset(13, 35)
+        selector.Size = UDim2.new(1, -26, 0, 31)
+        selector.BackgroundColor3 = COLORS.background
+        selector.Parent = row
+        corner(selector, 8)
+        stroke(selector, COLORS.border, 1, 0.18)
+
+        local list = Instance.new("UIListLayout")
+        list.FillDirection = Enum.FillDirection.Horizontal
+        list.Padding = UDim.new(0, 3)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Parent = selector
+
+        local values = {}
+        for _, option in ipairs(options) do
+            table.insert(values, tostring(option))
+        end
+        if #values == 0 then
+            table.insert(values, tostring(initial))
+        end
+
+        local selected = tostring(initial)
+        local buttons = {}
+        local offset = -(3 * (#values - 1) / #values)
+        local function render(animated)
+            for value, button in pairs(buttons) do
+                local active = value == selected
+                local properties = {
+                    BackgroundTransparency = active and 0.05 or 1,
+                    TextColor3 = active and COLORS.text or COLORS.muted,
+                }
+                if animated then
+                    animate(button, properties)
+                else
+                    button.BackgroundTransparency = properties.BackgroundTransparency
+                    button.TextColor3 = properties.TextColor3
+                end
+            end
+        end
+
+        for index, value in ipairs(values) do
+            local button = Instance.new("TextButton")
+            button.Name = "Option" .. tostring(index)
+            button.Size = UDim2.new(1 / #values, offset, 1, 0)
+            button.BackgroundColor3 = COLORS.accent
+            button.BackgroundTransparency = 1
+            button.Text = value
+            button.TextColor3 = COLORS.muted
+            button.Font = Enum.Font.GothamBold
+            button.TextSize = 11
+            button.AutoButtonColor = false
+            button.LayoutOrder = index
+            button.Parent = selector
+            corner(button, 7)
+            buttons[value] = button
+            button.Activated:Connect(function()
+                if selected == value then
+                    return
+                end
+                selected = value
+                render(true)
+                callback(value)
+            end)
+        end
+        render(false)
         return row
     end
 
@@ -3810,6 +4069,7 @@ __factories["init"] = function()
     local FOVOverride = __require("Features/FOVOverride")
     local AutoServerHop = __require("Features/AutoServerHop")
     local StateStore = __require("Core/StateStore")
+    local ExecutorSettings = __require("Core/ExecutorSettings")
 
     local Main = {}
 
@@ -3859,8 +4119,11 @@ __factories["init"] = function()
         local movement = MovementCoordinator.new()
         local mapProvider = MapProvider.new()
         local stateStore = StateStore.new()
+        local executorSettings = ExecutorSettings.new()
         local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
-        local window = UI.new(uiConfig.TITLE)
+        local window = UI.new(uiConfig.TITLE, {
+            widthPercent = executorSettings:getWidthPercent(),
+        })
         local function getPage(pageName)
             if typeof(window.getPage) == "function" then
                 return window:getPage(pageName)
@@ -3876,6 +4139,7 @@ __factories["init"] = function()
         app.movement = movement
         app.mapProvider = mapProvider
         app.stateStore = stateStore
+        app.executorSettings = executorSettings
         app.window = window
 
         local function contentItem(instance)
@@ -4051,6 +4315,42 @@ __factories["init"] = function()
             42
         ))
         localOverrideNote.TextColor3 = window.colors.muted
+
+        if typeof(UI.segmented) == "function" and typeof(window.setWidthPercent) == "function" then
+            contentItem(UI.section(settingsPage, "INTERFACE"))
+            contentItem(UI.segmented(
+                settingsPage,
+                "Largura da interface",
+                { "25%", "50%", "75%", "100%" },
+                tostring(executorSettings:getWidthPercent()) .. "%",
+                function(selected)
+                    local widthPercent = tonumber(string.match(selected, "^(%d+)%%$"))
+                    if not widthPercent or not window:setWidthPercent(widthPercent) then
+                        setStatus("Interface: largura invalida ignorada")
+                        return
+                    end
+                    local saved = executorSettings:setWidthPercent(widthPercent)
+                    if saved then
+                        setStatus(string.format(
+                            "Interface: largura %d%% salva em %s",
+                            widthPercent,
+                            executorSettings:getPath()
+                        ))
+                    else
+                        setStatus(string.format(
+                            "Interface: largura %d%% aplicada; filesystem indisponivel",
+                            widthPercent
+                        ))
+                    end
+                end
+            ))
+            local interfaceNote = contentItem(UI.info(
+                settingsPage,
+                "25% a 100% da tela. Configuracao local: GOATHub/settings.json.",
+                38
+            ))
+            interfaceNote.TextColor3 = window.colors.muted
+        end
 
         contentItem(UI.section(settingsPage, "AUTO REJOIN / SERVER HOP"))
         local savedLevelLimit = stateStore:getNumber(
