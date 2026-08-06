@@ -41,12 +41,11 @@ local __config = (function()
             COMPACT_BREAKPOINT = 520,
             NARROW_BREAKPOINT = 620,
             MIN_WIDTH = 300,
-            DEFAULT_WIDTH_PERCENT = 50,
+            DEFAULT_SCALE_PERCENT = 100,
             DEFAULT_THEME = "Dark",
             HEADER_HEIGHT = 54,
             COMPACT_HEADER_HEIGHT = 48,
             TAB_HEIGHT = 44,
-            STATUS_HEIGHT = 34,
         }),
 
         DISTANCES = table.freeze({
@@ -169,20 +168,28 @@ __factories["Core/ExecutorSettings"] = function()
 
     local DIRECTORY = "GOATHub"
     local FILE_PATH = DIRECTORY .. "/settings.json"
-    local FILE_VERSION = 3
+    local FILE_VERSION = 4
     local MAX_FILE_BYTES = 4096
     local ICON_CACHE_PATH = "GOATHub/UI/Ico/logo.png"
-    local WIDTH_PERCENTAGES = {
+    local SCALE_PERCENTAGES = {
+        [25] = true,
+        [50] = true,
+        [75] = true,
+        [100] = true,
+        [125] = true,
+        [150] = true,
+    }
+    local LEGACY_WIDTH_PERCENTAGES = {
         [25] = true,
         [50] = true,
         [75] = true,
         [100] = true,
     }
 
-    local function validWidthPercent(value)
+    local function validScalePercent(value)
         return typeof(value) == "number"
             and value % 1 == 0
-            and WIDTH_PERCENTAGES[value] == true
+            and SCALE_PERCENTAGES[value] == true
     end
 
     local function configuredIconUrl()
@@ -198,13 +205,13 @@ __factories["Core/ExecutorSettings"] = function()
     end
 
     function ExecutorSettings.new()
-        local defaultWidth = Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
-        if not validWidthPercent(defaultWidth) then
-            defaultWidth = 50
+        local defaultScale = Config.MODERN_UI.DEFAULT_SCALE_PERCENT
+        if not validScalePercent(defaultScale) then
+            defaultScale = 100
         end
 
         local self = setmetatable({
-            widthPercent = defaultWidth,
+            scalePercent = defaultScale,
             iconUrl = configuredIconUrl(),
             themeName = Theme.normalizeName(Config.MODERN_UI.DEFAULT_THEME),
             customTheme = Theme.defaultCustom(),
@@ -246,15 +253,25 @@ __factories["Core/ExecutorSettings"] = function()
         end)
         if not decodedOk
             or typeof(decoded) ~= "table"
-            or (decoded.version ~= 1 and decoded.version ~= 2 and decoded.version ~= FILE_VERSION)
+            or (decoded.version ~= 1
+                and decoded.version ~= 2
+                and decoded.version ~= 3
+                and decoded.version ~= FILE_VERSION)
             or typeof(decoded.ui) ~= "table"
-            or not validWidthPercent(decoded.ui.widthPercent)
         then
             return false
         end
-        self.widthPercent = decoded.ui.widthPercent
+        if decoded.version == FILE_VERSION then
+            if not validScalePercent(decoded.ui.scalePercent) then
+                return false
+            end
+            self.scalePercent = decoded.ui.scalePercent
+        elseif typeof(decoded.ui.widthPercent) ~= "number"
+            or LEGACY_WIDTH_PERCENTAGES[decoded.ui.widthPercent] ~= true then
+            return false
+        end
         local validStoredTheme = false
-        if decoded.version == FILE_VERSION and typeof(decoded.theme) == "table" then
+        if decoded.version >= 3 and typeof(decoded.theme) == "table" then
             self.themeName = Theme.normalizeName(decoded.theme.name)
             self.customTheme = Theme.normalizeCustom(decoded.theme.custom)
             validStoredTheme = decoded.theme.name == self.themeName
@@ -288,7 +305,7 @@ __factories["Core/ExecutorSettings"] = function()
             return HttpService:JSONEncode({
                 version = FILE_VERSION,
                 ui = {
-                    widthPercent = self.widthPercent,
+                    scalePercent = self.scalePercent,
                 },
                 icon = {
                     url = self.iconUrl,
@@ -306,8 +323,8 @@ __factories["Core/ExecutorSettings"] = function()
         return pcall(writefile, FILE_PATH, encoded)
     end
 
-    function ExecutorSettings:getWidthPercent()
-        return self.widthPercent
+    function ExecutorSettings:getScalePercent()
+        return self.scalePercent
     end
 
     function ExecutorSettings:getIcon()
@@ -317,14 +334,17 @@ __factories["Core/ExecutorSettings"] = function()
         }
     end
 
-    function ExecutorSettings:setWidthPercent(value)
+    function ExecutorSettings:setScalePercent(value)
         value = tonumber(value)
-        if not validWidthPercent(value) then
+        if not validScalePercent(value) then
             return false
         end
-        self.widthPercent = value
+        self.scalePercent = value
         return self:_save()
     end
+
+    ExecutorSettings.getWidthPercent = ExecutorSettings.getScalePercent
+    ExecutorSettings.setWidthPercent = ExecutorSettings.setScalePercent
 
     function ExecutorSettings:getTheme()
         return {
@@ -3710,57 +3730,76 @@ end
 __factories["UI/Layout"] = function()
     local Layout = {}
 
-    local WIDTH_PERCENTAGES = {
+    local SCALE_PERCENTAGES = {
         [25] = true,
         [50] = true,
         [75] = true,
         [100] = true,
+        [125] = true,
+        [150] = true,
     }
 
-    function Layout.normalizeWidthPercent(value, defaultValue)
+    function Layout.normalizeScalePercent(value, defaultValue)
         value = tonumber(value)
-        if WIDTH_PERCENTAGES[value] then
+        if SCALE_PERCENTAGES[value] then
             return value
         end
         defaultValue = tonumber(defaultValue)
-        if WIDTH_PERCENTAGES[defaultValue] then
+        if SCALE_PERCENTAGES[defaultValue] then
             return defaultValue
         end
-        return 50
+        return 100
     end
 
-    function Layout.calculate(viewport, config, widthPercent)
+    function Layout.calculate(viewport, config, scalePercent)
         local padding = config.PADDING
         local availableWidth = math.max(1, viewport.X - padding * 2)
         local availableHeight = math.max(1, viewport.Y - padding * 2)
 
-        local requestedWidth
         local width
         local narrow
         local compact
         local mode
-        if widthPercent ~= nil then
-            local normalized = Layout.normalizeWidthPercent(widthPercent, config.DEFAULT_WIDTH_PERCENT)
-            requestedWidth = availableWidth * normalized / 100
-            local minimumWidth = math.min(config.MIN_WIDTH or 1, availableWidth)
-            width = math.clamp(math.floor(requestedWidth + 0.5), minimumWidth, availableWidth)
-            narrow = width <= config.NARROW_BREAKPOINT
-            compact = narrow or viewport.Y <= config.COMPACT_BREAKPOINT
-            mode = narrow and "narrow" or (compact and "compact" or "desktop")
+        if scalePercent ~= nil then
+            local normalized = Layout.normalizeScalePercent(scalePercent, config.DEFAULT_SCALE_PERCENT)
+            local baseWidth = config.DESKTOP_WIDTH
+            local baseHeight = config.DESKTOP_HEIGHT
+            local requestedScale = normalized / 100
+            local fitScale = math.min(availableWidth / baseWidth, availableHeight / baseHeight)
+            local effectiveScale = math.min(requestedScale, fitScale)
+            width = baseWidth * effectiveScale
+            local height = baseHeight * effectiveScale
+            mode = effectiveScale < 1 and "scaled" or "desktop"
+            return {
+                mode = mode,
+                padding = padding,
+                width = width,
+                height = height,
+                baseWidth = baseWidth,
+                baseHeight = baseHeight,
+                scale = effectiveScale,
+                requestedScale = requestedScale,
+                centerX = viewport.X / 2,
+                centerY = viewport.Y / 2,
+                headerHeight = config.HEADER_HEIGHT or 42,
+                effectiveHeaderHeight = (config.HEADER_HEIGHT or 42) * effectiveScale,
+                rowHeight = 38,
+                textSize = 13,
+            }
         else
             narrow = viewport.X <= config.NARROW_BREAKPOINT
             compact = narrow or viewport.Y <= config.COMPACT_BREAKPOINT
             if narrow then
-                requestedWidth = config.DESKTOP_WIDTH
+                width = config.DESKTOP_WIDTH
                 mode = "narrow"
             elseif compact then
-                requestedWidth = config.COMPACT_WIDTH
+                width = config.COMPACT_WIDTH
                 mode = "compact"
             else
-                requestedWidth = config.DESKTOP_WIDTH
+                width = config.DESKTOP_WIDTH
                 mode = "desktop"
             end
-            width = math.min(requestedWidth, availableWidth)
+            width = math.min(width, availableWidth)
         end
 
         return {
@@ -3777,6 +3816,9 @@ __factories["UI/Layout"] = function()
             textSize = compact and 12 or 13,
         }
     end
+
+    -- Compatibilidade somente para consumidores legacy da API anterior.
+    Layout.normalizeWidthPercent = Layout.normalizeScalePercent
 
     function Layout.clampCenter(centerX, centerY, width, height, viewport, padding)
         local halfWidth = width / 2
@@ -3841,6 +3883,7 @@ __factories["UI/ModernUI"] = function()
 
     local TABS = table.freeze({ "Main", "Visual", "Misc", "Settings" })
     local TWEEN_INFO = TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    local WINDOW_TWEEN_INFO = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
     local THEME_ATTRIBUTE = "GOATHubTheme_"
     local THEME_PROPERTIES = table.freeze({
         "BackgroundColor3",
@@ -3969,10 +4012,11 @@ __factories["UI/ModernUI"] = function()
             activePage = "Main",
             themeName = themeName,
             customTheme = customTheme,
-            widthPercent = Layout.normalizeWidthPercent(
-                options.widthPercent,
-                Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
+            scalePercent = Layout.normalizeScalePercent(
+                options.scalePercent,
+                Config.MODERN_UI.DEFAULT_SCALE_PERCENT
             ),
+            transitionBusy = false,
         }
 
         local gui = Instance.new("ScreenGui")
@@ -3992,10 +4036,15 @@ __factories["UI/ModernUI"] = function()
         themed(frame, "BackgroundColor3", "panel")
         frame.ClipsDescendants = true
         frame.Parent = gui
-        corner(frame, 14)
+        self.frameCorner = corner(frame, 14)
         stroke(frame, "border", 1, 0.08)
         gradient(frame, "background", "panel", 90)
         self.frame = frame
+
+        local windowScale = Instance.new("UIScale")
+        windowScale.Scale = 1
+        windowScale.Parent = frame
+        self.windowScale = windowScale
 
         local topBar = Instance.new("Frame")
         topBar.Name = "TopBar"
@@ -4016,12 +4065,15 @@ __factories["UI/ModernUI"] = function()
         dragHandle.Parent = topBar
         self.dragHandle = dragHandle
 
-        local brand = Instance.new("Frame")
+        local brand = Instance.new("TextButton")
         brand.Name = "Brand"
-        brand.AnchorPoint = Vector2.new(0, 0.5)
-        brand.Position = UDim2.new(0, 12, 0.5, 0)
+        brand.AnchorPoint = Vector2.new(0.5, 0.5)
+        brand.Position = UDim2.new(0, 28, 0.5, 0)
         brand.Size = UDim2.fromOffset(32, 32)
         themed(brand, "BackgroundColor3", "accent")
+        brand.Text = ""
+        brand.AutoButtonColor = false
+        brand.ZIndex = 4
         brand.Parent = topBar
         corner(brand, 9)
         gradient(brand, "accent", "accentBright", 35)
@@ -4182,31 +4234,6 @@ __factories["UI/ModernUI"] = function()
         end
         self.content = self.pages.Main
 
-        local statusBar = Instance.new("Frame")
-        statusBar.Name = "StatusBar"
-        themed(statusBar, "BackgroundColor3", "background")
-        statusBar.BorderSizePixel = 0
-        statusBar.Parent = frame
-        corner(statusBar, 10)
-        self.statusBar = statusBar
-
-        local statusDot = Instance.new("Frame")
-        statusDot.AnchorPoint = Vector2.new(0, 0.5)
-        statusDot.Position = UDim2.new(0, 14, 0.5, 0)
-        statusDot.Size = UDim2.fromOffset(7, 7)
-        themed(statusDot, "BackgroundColor3", "green")
-        statusDot.BorderSizePixel = 0
-        statusDot.Parent = statusBar
-        corner(statusDot, 7)
-
-        local statusLabel = label(statusBar, "GOATHubSTK iniciado", 11)
-        statusLabel.Name = "Status"
-        statusLabel.Position = UDim2.fromOffset(29, 0)
-        statusLabel.Size = UDim2.new(1, -42, 1, 0)
-        themed(statusLabel, "TextColor3", "muted")
-        statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-        self.statusLabel = statusLabel
-
         local function currentViewport()
             local camera = Workspace.CurrentCamera
             return camera and camera.ViewportSize or Vector2.new(800, 600)
@@ -4229,10 +4256,9 @@ __factories["UI/ModernUI"] = function()
             end
         end
 
-        function self:setStatus(message)
-            if not self.destroyed and self.statusLabel and self.statusLabel.Parent then
-                self.statusLabel.Text = tostring(message)
-            end
+        function self:setStatus(_message)
+            -- A UI moderna nao exibe barra de status; controllers continuam
+            -- podendo emitir mensagens sem acoplar comportamento ao visual.
         end
 
         function self:setTheme(name, custom)
@@ -4256,33 +4282,40 @@ __factories["UI/ModernUI"] = function()
             }
         end
 
-        function self:setWidthPercent(value)
-            local normalized = Layout.normalizeWidthPercent(value, Config.MODERN_UI.DEFAULT_WIDTH_PERCENT)
+        function self:setScalePercent(value)
+            local normalized = Layout.normalizeScalePercent(value, Config.MODERN_UI.DEFAULT_SCALE_PERCENT)
             if tonumber(value) ~= normalized then
                 return false
             end
-            if self.widthPercent ~= normalized then
-                self.widthPercent = normalized
+            if self.scalePercent ~= normalized then
+                self.scalePercent = normalized
                 self:_applyLayout(false)
             end
             return true
         end
+
+        self.setWidthPercent = self.setScalePercent
 
         function self:_applyLayout(resetCenter)
             if self.destroyed then
                 return
             end
             local viewport = currentViewport()
-            local calculated = Layout.calculate(viewport, Config.MODERN_UI, self.widthPercent)
-            local effectiveHeight = self.collapsed and calculated.headerHeight or calculated.height
+            local calculated = Layout.calculate(viewport, Config.MODERN_UI, self.scalePercent)
+            if self.transitionBusy then
+                self.layout = calculated
+                return
+            end
+            local actualWidth = self.collapsed and 52 or calculated.width
+            local actualHeight = self.collapsed and 52 or calculated.height
             local centerX = resetCenter and calculated.centerX or self.frame.Position.X.Offset
             local centerY = resetCenter and calculated.centerY or self.frame.Position.Y.Offset
             if resetCenter and not self.collapsed then
                 centerX, centerY = Layout.clampCenter(
                     centerX,
                     centerY,
-                    calculated.width,
-                    effectiveHeight,
+                    actualWidth,
+                    actualHeight,
                     viewport,
                     calculated.padding
                 )
@@ -4290,40 +4323,47 @@ __factories["UI/ModernUI"] = function()
                 centerX, centerY = Layout.clampDragCenter(
                     centerX,
                     centerY,
-                    calculated.width,
-                    effectiveHeight,
+                    actualWidth,
+                    actualHeight,
                     viewport,
                     calculated.padding,
-                    calculated.headerHeight
+                    self.collapsed and 52 or calculated.effectiveHeaderHeight
                 )
             end
 
             self.layout = calculated
-            self.frame.Size = UDim2.fromOffset(calculated.width, effectiveHeight)
             self.frame.Position = UDim2.fromOffset(centerX, centerY)
+            if self.collapsed then
+                self.windowScale.Scale = 1
+                self.frame.Size = UDim2.fromOffset(52, 52)
+                self.frameCorner.CornerRadius = UDim.new(0, 16)
+                self.topBar.Size = UDim2.fromScale(1, 1)
+                brand.Position = UDim2.fromScale(0.5, 0.5)
+                brand.Size = UDim2.fromOffset(38, 38)
+                self.tabBar.Visible = false
+                self.pageHost.Visible = false
+                return
+            end
+            self.windowScale.Scale = calculated.scale
+            self.frame.Size = UDim2.fromOffset(calculated.baseWidth, calculated.baseHeight)
+            self.frameCorner.CornerRadius = UDim.new(0, 14)
             self.topBar.Size = UDim2.new(1, 0, 0, calculated.headerHeight)
+            brand.Position = UDim2.new(0, 28, 0.5, 0)
+            brand.Size = UDim2.fromOffset(32, 32)
             self.tabBar.Position = UDim2.fromOffset(0, calculated.headerHeight)
             self.tabBar.Size = UDim2.new(1, 0, 0, Config.MODERN_UI.TAB_HEIGHT)
             self.pageHost.Position = UDim2.fromOffset(
                 0,
                 calculated.headerHeight + Config.MODERN_UI.TAB_HEIGHT
             )
-            if self.collapsed then
-                self.pageHost.Size = UDim2.new(1, 0, 0, 0)
-            else
-                self.pageHost.Size = UDim2.new(
-                    1,
-                    0,
-                    1,
-                    -(calculated.headerHeight + Config.MODERN_UI.TAB_HEIGHT + Config.MODERN_UI.STATUS_HEIGHT)
-                )
-            end
-            self.statusBar.AnchorPoint = Vector2.new(0, 1)
-            self.statusBar.Position = UDim2.fromScale(0, 1)
-            self.statusBar.Size = UDim2.new(1, 0, 0, Config.MODERN_UI.STATUS_HEIGHT)
-            self.tabBar.Visible = not self.collapsed
-            self.pageHost.Visible = not self.collapsed
-            self.statusBar.Visible = not self.collapsed
+            self.pageHost.Size = UDim2.new(
+                1,
+                0,
+                1,
+                -(calculated.headerHeight + Config.MODERN_UI.TAB_HEIGHT)
+            )
+            self.tabBar.Visible = true
+            self.pageHost.Visible = true
             self:selectPage(self.activePage)
         end
 
@@ -4348,6 +4388,9 @@ __factories["UI/ModernUI"] = function()
             if not finishedMouse and not finishedTouch then
                 return
             end
+            if self.dragState == "dragging" then
+                self.suppressBrandUntil = os.clock() + 0.18
+            end
             self.dragState = "idle"
             self.dragKind = nil
             self.dragInput = nil
@@ -4355,7 +4398,10 @@ __factories["UI/ModernUI"] = function()
             self.startCenter = nil
         end
 
-        table.insert(self.connections, dragHandle.InputBegan:Connect(function(input)
+        local function beginWindowDrag(input)
+            if self.transitionBusy then
+                return
+            end
             if input.UserInputType ~= Enum.UserInputType.MouseButton1
                 and input.UserInputType ~= Enum.UserInputType.Touch
             then
@@ -4366,7 +4412,10 @@ __factories["UI/ModernUI"] = function()
             self.dragInput = self.dragKind == "touch" and input or nil
             self.dragStart = input.Position
             self.startCenter = Vector2.new(frame.Position.X.Offset, frame.Position.Y.Offset)
-        end))
+        end
+
+        table.insert(self.connections, dragHandle.InputBegan:Connect(beginWindowDrag))
+        table.insert(self.connections, brand.InputBegan:Connect(beginWindowDrag))
 
         table.insert(self.connections, UserInputService.InputChanged:Connect(function(input)
             local movingMouse = self.dragKind == "mouse"
@@ -4384,15 +4433,16 @@ __factories["UI/ModernUI"] = function()
             end
 
             local viewport = currentViewport()
-            local effectiveHeight = self.collapsed and self.layout.headerHeight or self.layout.height
+            local effectiveWidth = self.collapsed and 52 or self.layout.width
+            local effectiveHeight = self.collapsed and 52 or self.layout.height
             local x, y = Layout.clampDragCenter(
                 self.startCenter.X + delta.X,
                 self.startCenter.Y + delta.Y,
-                self.layout.width,
+                effectiveWidth,
                 effectiveHeight,
                 viewport,
                 self.layout.padding,
-                self.layout.headerHeight
+                self.collapsed and 52 or self.layout.effectiveHeaderHeight
             )
             frame.Position = UDim2.fromOffset(x, y)
         end))
@@ -4406,17 +4456,131 @@ __factories["UI/ModernUI"] = function()
                 self.closeCallback()
             end
         end))
-        table.insert(self.connections, minimizeButton.Activated:Connect(function()
-            local currentHeight = self.frame.Size.Y.Offset
-            local top = self.frame.Position.Y.Offset - currentHeight / 2
-            self.collapsed = not self.collapsed
-            minimizeButton.Text = self.collapsed and "+" or "–"
-            local nextHeight = self.collapsed and self.layout.headerHeight or self.layout.height
-            self.frame.Position = UDim2.fromOffset(
-                self.frame.Position.X.Offset,
-                top + nextHeight / 2
-            )
+        local function tweenWindow(instance, properties)
+            local tween = TweenService:Create(instance, WINDOW_TWEEN_INFO, properties)
+            tween:Play()
+            return tween
+        end
+
+        local function setHeaderDetailsVisible(visible)
+            titleLabel.Visible = visible
+            subtitle.Visible = visible
+            minimizeButton.Visible = visible
+            closeButton.Visible = visible
+            dragHandle.Visible = visible
+        end
+
+        local function collapseToLogo()
+            if self.collapsed or self.transitionBusy then
+                return
+            end
+            self.transitionBusy = true
+            local left = frame.Position.X.Offset - self.layout.width / 2
+            local top = frame.Position.Y.Offset - self.layout.height / 2
+            local headerTween = tweenWindow(frame, {
+                Size = UDim2.fromOffset(self.layout.baseWidth, self.layout.headerHeight),
+                Position = UDim2.fromOffset(
+                    frame.Position.X.Offset,
+                    top + self.layout.effectiveHeaderHeight / 2
+                ),
+            })
+            headerTween.Completed:Wait()
+            if self.destroyed then
+                return
+            end
+            self.collapsed = true
+            self.tabBar.Visible = false
+            self.pageHost.Visible = false
+            setHeaderDetailsVisible(false)
+
+            tweenWindow(self.windowScale, { Scale = 1 })
+            tweenWindow(brand, {
+                Position = UDim2.fromScale(0.5, 0.5),
+                Size = UDim2.fromOffset(38, 38),
+            })
+            tweenWindow(self.frameCorner, { CornerRadius = UDim.new(0, 16) })
+            local logoTween = tweenWindow(frame, {
+                Size = UDim2.fromOffset(52, 52),
+                Position = UDim2.fromOffset(left + 26, top + 26),
+            })
+            logoTween.Completed:Wait()
+            if self.destroyed then
+                return
+            end
+            self.topBar.Size = UDim2.fromScale(1, 1)
+            self.transitionBusy = false
             self:_applyLayout(false)
+        end
+
+        local function expandFromLogo()
+            if not self.collapsed or self.transitionBusy then
+                return
+            end
+            self.transitionBusy = true
+            local viewport = currentViewport()
+            local calculated = Layout.calculate(viewport, Config.MODERN_UI, self.scalePercent)
+            self.layout = calculated
+            local left = frame.Position.X.Offset - 26
+            local top = frame.Position.Y.Offset - 26
+            local centerX = left + calculated.width / 2
+            local centerY = top + calculated.height / 2
+            centerX, centerY = Layout.clampDragCenter(
+                centerX,
+                centerY,
+                calculated.width,
+                calculated.height,
+                viewport,
+                calculated.padding,
+                calculated.effectiveHeaderHeight
+            )
+            local expandedTop = centerY - calculated.height / 2
+
+            tweenWindow(self.windowScale, { Scale = calculated.scale })
+            tweenWindow(brand, {
+                Position = UDim2.new(0, 28, 0.5, 0),
+                Size = UDim2.fromOffset(32, 32),
+            })
+            tweenWindow(self.frameCorner, { CornerRadius = UDim.new(0, 14) })
+            local headerTween = tweenWindow(frame, {
+                Size = UDim2.fromOffset(calculated.baseWidth, calculated.headerHeight),
+                Position = UDim2.fromOffset(
+                    centerX,
+                    expandedTop + calculated.effectiveHeaderHeight / 2
+                ),
+            })
+            headerTween.Completed:Wait()
+            if self.destroyed then
+                return
+            end
+            setHeaderDetailsVisible(true)
+            self.topBar.Size = UDim2.new(1, 0, 0, calculated.headerHeight)
+            self.tabBar.Visible = true
+            self.pageHost.Visible = true
+            self.collapsed = false
+            self:selectPage(self.activePage)
+
+            local bodyTween = tweenWindow(frame, {
+                Size = UDim2.fromOffset(calculated.baseWidth, calculated.baseHeight),
+                Position = UDim2.fromOffset(centerX, centerY),
+            })
+            bodyTween.Completed:Wait()
+            if self.destroyed then
+                return
+            end
+            self.transitionBusy = false
+            self:_applyLayout(false)
+        end
+
+        table.insert(self.connections, minimizeButton.Activated:Connect(function()
+            task.spawn(collapseToLogo)
+        end))
+        table.insert(self.connections, brand.Activated:Connect(function()
+            if self.collapsed and os.clock() >= (self.suppressBrandUntil or 0) then
+                self.dragState = "idle"
+                self.dragKind = nil
+                self.dragInput = nil
+                task.spawn(expandFromLogo)
+            end
         end))
 
         function self:getPage(pageName)
@@ -5549,7 +5713,7 @@ __factories["init"] = function()
         local savedTheme = executorSettings:getTheme()
         local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
         local window = UI.new(uiConfig.TITLE, {
-            widthPercent = executorSettings:getWidthPercent(),
+            scalePercent = executorSettings:getScalePercent(),
             icon = executorSettings:getIcon(),
             theme = savedTheme,
         })
@@ -5579,7 +5743,7 @@ __factories["init"] = function()
         end
 
         local status = window.statusLabel
-        if not status then
+        if not status and Config.UI_STYLE == "Legacy" then
             status = contentItem(UI.info(mainPage, "GOATHubSTK iniciado", 42))
             status.TextColor3 = window.colors.text
         end
@@ -5589,7 +5753,7 @@ __factories["init"] = function()
             if not app.destroyed then
                 if typeof(window.setStatus) == "function" then
                     window:setStatus(message)
-                elseif status.Parent then
+                elseif status and status.Parent then
                     status.Text = tostring(message)
                 end
             end
@@ -5850,7 +6014,7 @@ __factories["init"] = function()
                 fovOverride:setEnabled(enabled)
             end
         )
-        if typeof(UI.segmented) == "function" and typeof(window.setWidthPercent) == "function" then
+        if typeof(UI.segmented) == "function" and typeof(window.setScalePercent) == "function" then
             contentItem(UI.section(settingsPage, "INTERFACE"))
             local customControls = {}
             local currentTheme = executorSettings:getTheme()
@@ -5878,26 +6042,26 @@ __factories["init"] = function()
             ))
             contentItem(UI.segmented(
                 settingsPage,
-                "Largura da interface",
-                { "25%", "50%", "75%", "100%" },
-                tostring(executorSettings:getWidthPercent()) .. "%",
+                "Tamanho da interface",
+                { "25%", "50%", "75%", "100%", "125%", "150%" },
+                tostring(executorSettings:getScalePercent()) .. "%",
                 function(selected)
-                    local widthPercent = tonumber(string.match(selected, "^(%d+)%%$"))
-                    if not widthPercent or not window:setWidthPercent(widthPercent) then
-                        setStatus("Interface: largura invalida ignorada")
+                    local scalePercent = tonumber(string.match(selected, "^(%d+)%%$"))
+                    if not scalePercent or not window:setScalePercent(scalePercent) then
+                        setStatus("Interface: tamanho invalido ignorado")
                         return
                     end
-                    local saved = executorSettings:setWidthPercent(widthPercent)
+                    local saved = executorSettings:setScalePercent(scalePercent)
                     if saved then
                         setStatus(string.format(
-                            "Interface: largura %d%% salva em %s",
-                            widthPercent,
+                            "Interface: tamanho %d%% salvo em %s",
+                            scalePercent,
                             executorSettings:getPath()
                         ))
                     else
                         setStatus(string.format(
-                            "Interface: largura %d%% aplicada; filesystem indisponivel",
-                            widthPercent
+                            "Interface: tamanho %d%% aplicado; filesystem indisponivel",
+                            scalePercent
                         ))
                     end
                 end
