@@ -13,8 +13,8 @@ local __config = (function()
 
         UI_STYLE = "Modern",
 
-        -- O arquivo fica no repositorio e e armazenado pelo executor somente neste
-        -- caminho fixo. Mantenha a URL raw HTTPS apontando para o arquivo ICO real.
+        -- PNG no repositorio e no cache fixo do executor. A ImageLabel do Roblox
+        -- renderiza PNG de forma consistente; mantenha esta URL raw HTTPS.
         ICON = table.freeze({
             URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/UI/Ico/logo.png",
             CACHE_DIRECTORY = "GOATHub/UI/Ico",
@@ -280,27 +280,18 @@ __factories["Core/ExecutorSettings"] = function()
 end
 
 __factories["Core/IconCache"] = function()
-    -- Baixa uma unica vez o icone da UI e o converte para um asset local do executor.
-    -- ImageLabel.Image precisa receber o URI retornado por getcustomasset/getsynasset,
-    -- nunca os bytes do ICO nem a URL raw do GitHub.
+    -- Imagem GitHub PNG -> cache fixo do executor -> URI para ImageLabel.
+    -- ImageLabel.Image recebe somente o URI de getcustomasset/getsynasset.
 
     local Config = __require("Config")
 
     local IconCache = {}
 
     local CACHE_DIRECTORY = "GOATHub/UI/Ico"
-    local ICO_CACHE_PATH = CACHE_DIRECTORY .. "/logo.ico"
-    local PNG_CACHE_PATH = CACHE_DIRECTORY .. "/logo.png"
+    local CACHE_PATH = CACHE_DIRECTORY .. "/logo.png"
     local MAX_BYTES = 512 * 1024
     local attempted = false
     local cachedAsset = nil
-
-    local function validIco(source)
-        return typeof(source) == "string"
-            and #source >= 4
-            and #source <= MAX_BYTES
-            and source:sub(1, 4) == "\0\0\1\0"
-    end
 
     local function validPng(source)
         return typeof(source) == "string"
@@ -316,66 +307,40 @@ __factories["Core/IconCache"] = function()
         for _, directory in ipairs({ "GOATHub", "GOATHub/UI", CACHE_DIRECTORY }) do
             local exists = false
             if typeof(isfolder) == "function" then
-                local ok, value = pcall(isfolder, directory)
-                exists = ok and value == true
+                local checked, value = pcall(isfolder, directory)
+                exists = checked and value == true
             end
-            if not exists then
-                local ok = pcall(makefolder, directory)
-                if not ok then
-                    return false
-                end
+            if not exists and not pcall(makefolder, directory) then
+                return false
             end
         end
         return true
     end
 
-    local function readCachedFile(path, validator)
+    local function readCachedPng()
         if typeof(readfile) ~= "function" then
             return nil
         end
         if typeof(isfile) == "function" then
-            local existsOk, exists = pcall(isfile, path)
-            if not existsOk or not exists then
+            local checked, exists = pcall(isfile, CACHE_PATH)
+            if not checked or not exists then
                 return nil
             end
         end
-        local readOk, source = pcall(readfile, path)
-        if readOk and validator(source) then
-            return source
-        end
-        return nil
+        local readOk, source = pcall(readfile, CACHE_PATH)
+        return if readOk and validPng(source) then source else nil
     end
 
-    local function embeddedPng(ico)
-        local firstByte = ico:find("\137PNG\13\10\26\10", 1, true)
-        if not firstByte then
-            return nil
-        end
-        local png = ico:sub(firstByte)
-        return if validPng(png) then png else nil
-    end
-
-    local function downloadIcon()
+    local function downloadPng()
         local iconConfig = Config.ICON
         local url = typeof(iconConfig) == "table" and iconConfig.URL or nil
         if typeof(url) ~= "string" or not url:match("^https://raw%.githubusercontent%.com/") then
             return nil
         end
-        local downloadOk, source = pcall(function()
+        local downloaded, source = pcall(function()
             return game:HttpGet(url)
         end)
-        if not downloadOk or not validIco(source) then
-            return nil
-        end
-        return source
-    end
-
-    local function cacheIcon(path, source)
-        if typeof(writefile) ~= "function" or not ensureCacheDirectory() then
-            return false
-        end
-        local writeOk = pcall(writefile, path, source)
-        return writeOk
+        return if downloaded and validPng(source) then source else nil
     end
 
     local function assetLoader()
@@ -394,31 +359,23 @@ __factories["Core/IconCache"] = function()
         end
         attempted = true
 
-        local source = readCachedFile(ICO_CACHE_PATH, validIco)
-        if not source then
-            source = downloadIcon()
-            if not source or not cacheIcon(ICO_CACHE_PATH, source) then
+        local png = readCachedPng()
+        if not png then
+            png = downloadPng()
+            if not png or not ensureCacheDirectory() or typeof(writefile) ~= "function" then
                 return nil
             end
-        end
-
-        -- Roblox renderiza PNG de forma consistente; este ICO contem um PNG embutido.
-        -- Mantemos o ICO requisitado como cache de origem e extraimos o PNG uma vez.
-        local png = readCachedFile(PNG_CACHE_PATH, validPng)
-        if not png then
-            png = embeddedPng(source)
-            if not png or not cacheIcon(PNG_CACHE_PATH, png) then
+            if not pcall(writefile, CACHE_PATH, png) then
                 return nil
             end
         end
 
         local loader = assetLoader()
-        if not loader then
-            return nil
-        end
-        local assetOk, asset = pcall(loader, PNG_CACHE_PATH)
-        if assetOk and typeof(asset) == "string" and asset ~= "" then
-            cachedAsset = asset
+        if loader then
+            local loaded, asset = pcall(loader, CACHE_PATH)
+            if loaded and typeof(asset) == "string" and asset ~= "" then
+                cachedAsset = asset
+            end
         end
         return cachedAsset
     end
