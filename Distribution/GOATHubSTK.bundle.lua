@@ -16,7 +16,7 @@ local __config = (function()
         -- O arquivo fica no repositorio e e armazenado pelo executor somente neste
         -- caminho fixo. Mantenha a URL raw HTTPS apontando para o arquivo ICO real.
         ICON = table.freeze({
-            URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/GOATHubSTK/GOATHubSTKClient/UI/Ico/logo.ico",
+            URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/UI/Ico/logo.ico",
             CACHE_DIRECTORY = "GOATHub/UI/Ico",
             CACHE_FILE = "logo.ico",
             MAX_BYTES = 512 * 1024,
