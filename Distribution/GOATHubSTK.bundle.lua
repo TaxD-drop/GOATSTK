@@ -167,8 +167,9 @@ __factories["Core/ExecutorSettings"] = function()
 
     local DIRECTORY = "GOATHub"
     local FILE_PATH = DIRECTORY .. "/settings.json"
-    local FILE_VERSION = 1
+    local FILE_VERSION = 2
     local MAX_FILE_BYTES = 4096
+    local ICON_CACHE_PATH = "GOATHub/UI/Ico/logo.png"
     local WIDTH_PERCENTAGES = {
         [25] = true,
         [50] = true,
@@ -182,6 +183,18 @@ __factories["Core/ExecutorSettings"] = function()
             and WIDTH_PERCENTAGES[value] == true
     end
 
+    local function configuredIconUrl()
+        local icon = Config.ICON
+        local url = typeof(icon) == "table" and icon.URL or ""
+        if typeof(url) == "string"
+            and #url <= 512
+            and url:match("^https://raw%.githubusercontent%.com/")
+            and url:match("%.png$") then
+            return url
+        end
+        return ""
+    end
+
     function ExecutorSettings.new()
         local defaultWidth = Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
         if not validWidthPercent(defaultWidth) then
@@ -190,11 +203,13 @@ __factories["Core/ExecutorSettings"] = function()
 
         local self = setmetatable({
             widthPercent = defaultWidth,
+            iconUrl = configuredIconUrl(),
+            migrationNeeded = false,
             persistent = typeof(writefile) == "function" and typeof(makefolder) == "function",
             loaded = false,
         }, ExecutorSettings)
         self.loaded = self:_load()
-        if not self.loaded and self.persistent then
+        if (not self.loaded or self.migrationNeeded) and self.persistent then
             self:_save()
         end
         return self
@@ -227,13 +242,21 @@ __factories["Core/ExecutorSettings"] = function()
         end)
         if not decodedOk
             or typeof(decoded) ~= "table"
-            or decoded.version ~= FILE_VERSION
+            or (decoded.version ~= 1 and decoded.version ~= FILE_VERSION)
             or typeof(decoded.ui) ~= "table"
             or not validWidthPercent(decoded.ui.widthPercent)
         then
             return false
         end
         self.widthPercent = decoded.ui.widthPercent
+        if decoded.version == FILE_VERSION
+            and typeof(decoded.icon) == "table"
+            and decoded.icon.url == self.iconUrl
+            and decoded.icon.cachePath == ICON_CACHE_PATH then
+            self.migrationNeeded = false
+        else
+            self.migrationNeeded = true
+        end
         return true
     end
 
@@ -247,6 +270,10 @@ __factories["Core/ExecutorSettings"] = function()
                 ui = {
                     widthPercent = self.widthPercent,
                 },
+                icon = {
+                    url = self.iconUrl,
+                    cachePath = ICON_CACHE_PATH,
+                },
             })
         end)
         if not encodedOk or typeof(encoded) ~= "string" or #encoded > MAX_FILE_BYTES then
@@ -257,6 +284,13 @@ __factories["Core/ExecutorSettings"] = function()
 
     function ExecutorSettings:getWidthPercent()
         return self.widthPercent
+    end
+
+    function ExecutorSettings:getIcon()
+        return {
+            url = self.iconUrl,
+            cachePath = ICON_CACHE_PATH,
+        }
     end
 
     function ExecutorSettings:setWidthPercent(value)
@@ -292,6 +326,7 @@ __factories["Core/IconCache"] = function()
     local MAX_BYTES = 512 * 1024
     local attempted = false
     local cachedAsset = nil
+    local lastFailure = nil
 
     local function validPng(source)
         return typeof(source) == "string"
@@ -331,10 +366,18 @@ __factories["Core/IconCache"] = function()
         return if readOk and validPng(source) then source else nil
     end
 
-    local function downloadPng()
+    local function configuredUrl(options)
         local iconConfig = Config.ICON
-        local url = typeof(iconConfig) == "table" and iconConfig.URL or nil
+        local url = typeof(options) == "table" and options.url
+            or (typeof(iconConfig) == "table" and iconConfig.URL or nil)
         if typeof(url) ~= "string" or not url:match("^https://raw%.githubusercontent%.com/") then
+            return nil
+        end
+        return url
+    end
+
+    local function downloadPng(url)
+        if not url then
             return nil
         end
         local downloaded, source = pcall(function()
@@ -350,41 +393,62 @@ __factories["Core/IconCache"] = function()
         if typeof(getsynasset) == "function" then
             return getsynasset
         end
+        if typeof(getexecutorasset) == "function" then
+            return getexecutorasset
+        end
+        local env = if typeof(getgenv) == "function" then getgenv() else _G
+        if typeof(env) == "table" then
+            for _, name in ipairs({ "getcustomasset", "getsynasset", "getexecutorasset" }) do
+                if typeof(env[name]) == "function" then
+                    return env[name]
+                end
+            end
+        end
+        if typeof(syn) == "table" and typeof(syn.getcustomasset) == "function" then
+            return syn.getcustomasset
+        end
         return nil
     end
 
-    function IconCache.getAsset()
+    function IconCache.getAsset(options)
         if attempted then
-            return cachedAsset
+            return cachedAsset, lastFailure
         end
         attempted = true
 
         local png = readCachedPng()
         if not png then
-            png = downloadPng()
+            png = downloadPng(configuredUrl(options))
             if not png or not ensureCacheDirectory() or typeof(writefile) ~= "function" then
-                return nil
+                lastFailure = "download ou filesystem indisponivel"
+                return nil, lastFailure
             end
             if not pcall(writefile, CACHE_PATH, png) then
-                return nil
+                lastFailure = "nao foi possivel salvar " .. CACHE_PATH
+                return nil, lastFailure
             end
         end
 
         local loader = assetLoader()
-        if loader then
-            local loaded, asset = pcall(loader, CACHE_PATH)
-            if loaded and typeof(asset) == "string" and asset ~= "" then
-                cachedAsset = asset
-            end
+        if not loader then
+            lastFailure = "executor sem getcustomasset/getsynasset/getexecutorasset"
+            return nil, lastFailure
         end
-        return cachedAsset
+        local loaded, asset = pcall(loader, CACHE_PATH)
+        if loaded and typeof(asset) == "string" and asset ~= "" then
+            cachedAsset = asset
+            lastFailure = nil
+        else
+            lastFailure = "API de asset rejeitou " .. CACHE_PATH .. ": " .. tostring(asset)
+        end
+        return cachedAsset, lastFailure
     end
 
-    function IconCache.loadAsync(callback)
+    function IconCache.loadAsync(options, callback)
         task.spawn(function()
-            local asset = IconCache.getAsset()
+            local asset, failure = IconCache.getAsset(options)
             if typeof(callback) == "function" then
-                callback(asset)
+                callback(asset, failure)
             end
         end)
     end
@@ -3527,7 +3591,6 @@ end
 
 __factories["UI/ModernUI"] = function()
     local Players = game:GetService("Players")
-    local ContentProvider = game:GetService("ContentProvider")
     local TweenService = game:GetService("TweenService")
     local UserInputService = game:GetService("UserInputService")
     local Workspace = game:GetService("Workspace")
@@ -3711,22 +3774,16 @@ __factories["UI/ModernUI"] = function()
         brandFallback.Font = Enum.Font.GothamBold
         brandFallback.Visible = true
 
-        IconCache.loadAsync(function(asset)
+        IconCache.loadAsync(options.icon, function(asset, failure)
             if self.destroyed or not brandIcon.Parent or not brandFallback.Parent then
                 return
             end
             if typeof(asset) == "string" and asset ~= "" then
                 brandIcon.Image = asset
-                local preloaded = pcall(function()
-                    ContentProvider:PreloadAsync({ brandIcon })
-                end)
-                local known, loaded = pcall(function()
-                    return brandIcon.IsLoaded
-                end)
-                if preloaded and (not known or loaded) and not self.destroyed then
-                    brandIcon.ImageTransparency = 0
-                    brandFallback.Visible = false
-                end
+                brandIcon.ImageTransparency = 0
+                brandFallback.Visible = false
+            elseif failure then
+                warn("[GOATHubSTK] Icone da TopBar: " .. tostring(failure))
             end
         end)
 
@@ -4863,6 +4920,7 @@ __factories["init"] = function()
         local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
         local window = UI.new(uiConfig.TITLE, {
             widthPercent = executorSettings:getWidthPercent(),
+            icon = executorSettings:getIcon(),
         })
         local function getPage(pageName)
             if typeof(window.getPage) == "function" then
