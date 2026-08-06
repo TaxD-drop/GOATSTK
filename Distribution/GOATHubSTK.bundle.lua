@@ -3604,7 +3604,7 @@ __factories["UI/ModernUI"] = function()
     local COLORS = table.freeze({
         background = Color3.fromRGB(7, 10, 18),
         panel = Color3.fromRGB(11, 16, 29),
-        header = 1,
+        header = Color3.fromRGB(14, 20, 35),
         surface = Color3.fromRGB(17, 24, 42),
         card = Color3.fromRGB(22, 31, 52),
         cardHover = Color3.fromRGB(28, 39, 65),
@@ -3729,7 +3729,7 @@ __factories["UI/ModernUI"] = function()
 
         local topBar = Instance.new("Frame")
         topBar.Name = "TopBar"
-        topBar.BackgroundTransparency = COLORS.header
+        topBar.BackgroundTransparency = 1
         topBar.BorderSizePixel = 0
         topBar.Parent = frame
         self.topBar = topBar
