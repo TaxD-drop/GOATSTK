@@ -68,8 +68,23 @@ local __config = (function()
             }),
         }),
 
+        PLAYER = table.freeze({
+            DEFAULT_WALK_SPEED = 16,
+            MIN_WALK_SPEED = 0,
+            MAX_WALK_SPEED = 100,
+            DEFAULT_JUMP_HEIGHT = 7,
+            MIN_JUMP_HEIGHT = 0,
+            MAX_JUMP_HEIGHT = 100,
+        }),
+
         CAMERA = table.freeze({
             DEFAULT_FOV = 70,
+            MIN_FOV = 30,
+            MAX_FOV = 120,
+        }),
+
+        LOOT_ESP = table.freeze({
+            MAX_DISTANCE = 350,
         }),
 
         SERVER_HOP = table.freeze({
@@ -253,6 +268,50 @@ __factories["Core/ExecutorSettings"] = function()
     end
 
     return ExecutorSettings
+end
+
+__factories["Core/LootPresentation"] = function()
+    local LootPresentation = {}
+
+    function LootPresentation.normalizeValue(value)
+        value = tonumber(value) or 0
+        return math.max(0, math.floor(value + 0.5))
+    end
+
+    function LootPresentation.tierForValue(value)
+        value = LootPresentation.normalizeValue(value)
+        if value >= 200 then
+            return "spectrum"
+        end
+        if value >= 40 then
+            return "legendary"
+        end
+        if value >= 15 then
+            return "epic"
+        end
+        if value >= 5 then
+            return "rare"
+        end
+        if value >= 3 then
+            return "uncommon"
+        end
+        if value >= 1 then
+            return "common"
+        end
+        return "unknown"
+    end
+
+    function LootPresentation.formatLabel(name, value)
+        name = tostring(name or "")
+        if name == "" then
+            name = "Loot desconhecido"
+        end
+        value = LootPresentation.normalizeValue(value)
+        local currency = value == 1 and "moeda" or "moedas"
+        return string.format("%s\n%d %s", name, value, currency)
+    end
+
+    return LootPresentation
 end
 
 __factories["Core/LootVisibility"] = function()
@@ -1847,11 +1906,22 @@ end
 
 __factories["Features/FOVOverride"] = function()
     local Workspace = game:GetService("Workspace")
+    local RunService = game:GetService("RunService")
 
     local Config = __require("Config")
 
     local FOVOverride = {}
     FOVOverride.__index = FOVOverride
+
+    local BIND_NAME = "GOATHubSTK_FOVOverride"
+
+    local function clampFOV(value)
+        return math.clamp(
+            tonumber(value) or Config.CAMERA.DEFAULT_FOV,
+            Config.CAMERA.MIN_FOV,
+            Config.CAMERA.MAX_FOV
+        )
+    end
 
     function FOVOverride.new(onStatus)
         local self = setmetatable({
@@ -1861,6 +1931,9 @@ __factories["Features/FOVOverride"] = function()
             workspaceConnection = nil,
             originals = setmetatable({}, { __mode = "k" }),
             writing = false,
+            targetFOV = clampFOV(Config.CAMERA.DEFAULT_FOV),
+            renderBound = false,
+            renderConnection = nil,
         }, FOVOverride)
 
         self.workspaceConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
@@ -1876,11 +1949,42 @@ __factories["Features/FOVOverride"] = function()
         if self.originals[camera] == nil then
             self.originals[camera] = camera.FieldOfView
         end
-        if camera.FieldOfView ~= Config.CAMERA.DEFAULT_FOV then
+        if camera.FieldOfView ~= self.targetFOV then
             self.writing = true
-            camera.FieldOfView = Config.CAMERA.DEFAULT_FOV
+            pcall(function()
+                camera.FieldOfView = self.targetFOV
+            end)
             self.writing = false
         end
+    end
+
+    function FOVOverride:_unbindRender()
+        if self.renderBound then
+            pcall(function()
+                RunService:UnbindFromRenderStep(BIND_NAME)
+            end)
+            self.renderBound = false
+        end
+        if self.renderConnection then
+            self.renderConnection:Disconnect()
+            self.renderConnection = nil
+        end
+    end
+
+    function FOVOverride:_bindRender()
+        self:_unbindRender()
+        local bound = pcall(function()
+            RunService:BindToRenderStep(BIND_NAME, Enum.RenderPriority.Last.Value, function()
+                self:_apply(Workspace.CurrentCamera)
+            end)
+        end)
+        if bound then
+            self.renderBound = true
+            return
+        end
+        self.renderConnection = RunService.RenderStepped:Connect(function()
+            self:_apply(Workspace.CurrentCamera)
+        end)
     end
 
     function FOVOverride:_bindCamera()
@@ -1893,6 +1997,9 @@ __factories["Features/FOVOverride"] = function()
         if camera and self.enabled then
             self:_apply(camera)
             self.cameraConnection = camera:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+                if not self.writing and camera.FieldOfView ~= self.targetFOV then
+                    self.originals[camera] = camera.FieldOfView
+                end
                 self:_apply(camera)
             end)
         end
@@ -1907,10 +2014,12 @@ __factories["Features/FOVOverride"] = function()
 
         if enabled then
             self:_bindCamera()
-            self.onStatus("Remover FOV: fixado em " .. tostring(Config.CAMERA.DEFAULT_FOV))
+            self:_bindRender()
+            self.onStatus("FOV: fixado em " .. tostring(math.floor(self.targetFOV + 0.5)))
             return
         end
 
+        self:_unbindRender()
         if self.cameraConnection then
             self.cameraConnection:Disconnect()
             self.cameraConnection = nil
@@ -1923,7 +2032,20 @@ __factories["Features/FOVOverride"] = function()
         end
         self.writing = false
         table.clear(self.originals)
-        self.onStatus("Remover FOV: valor anterior restaurado")
+        self.onStatus("FOV: valor anterior restaurado")
+    end
+
+    function FOVOverride:getFOV()
+        return self.targetFOV
+    end
+
+    function FOVOverride:setFOV(value)
+        self.targetFOV = clampFOV(value)
+        self:_apply(Workspace.CurrentCamera)
+        if self.enabled then
+            self.onStatus("FOV: fixado em " .. tostring(math.floor(self.targetFOV + 0.5)))
+        end
+        return self.targetFOV
     end
 
     function FOVOverride:stop()
@@ -2082,11 +2204,11 @@ __factories["Features/LootESP"] = function()
 
     local HIGHLIGHT_NAME = "GOATHubSTK_LootAura"
     local LABEL_NAME = "GOATHubSTK_LootLabel"
-    local LOOT_COLOR = Color3.fromRGB(255, 196, 72)
 
-    function LootESP.new(mapProvider, onStatus)
+    function LootESP.new(mapProvider, lootCatalog, onStatus)
         local self = setmetatable({
             mapProvider = mapProvider,
+            lootCatalog = lootCatalog,
             onStatus = onStatus or function() end,
             enabled = false,
             generation = 0,
@@ -2118,7 +2240,7 @@ __factories["Features/LootESP"] = function()
         end
     end
 
-    function LootESP:_createVisual(loot)
+    function LootESP:_createVisual(loot, item)
         local oldHighlight = loot.instance:FindFirstChild(HIGHLIGHT_NAME)
         if oldHighlight then
             oldHighlight:Destroy()
@@ -2132,8 +2254,8 @@ __factories["Features/LootESP"] = function()
         highlight.Name = HIGHLIGHT_NAME
         highlight.Adornee = loot.instance
         highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        highlight.FillColor = LOOT_COLOR
-        highlight.OutlineColor = Color3.fromRGB(255, 241, 190)
+        highlight.FillColor = item.color
+        highlight.OutlineColor = item.color:Lerp(Color3.new(1, 1, 1), 0.38)
         highlight.FillTransparency = 0.62
         highlight.OutlineTransparency = 0
         highlight.Parent = loot.instance
@@ -2142,24 +2264,26 @@ __factories["Features/LootESP"] = function()
         billboard.Name = LABEL_NAME
         billboard.Adornee = loot.border
         billboard.AlwaysOnTop = true
-        billboard.Size = UDim2.fromOffset(150, 32)
+        billboard.Size = UDim2.fromOffset(180, 44)
         billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.1, 0)
-        billboard.MaxDistance = 350
+        billboard.MaxDistance = Config.LOOT_ESP.MAX_DISTANCE
         billboard.Parent = loot.border
 
         local text = Instance.new("TextLabel")
         text.Size = UDim2.fromScale(1, 1)
         text.BackgroundTransparency = 1
-        text.Text = "LOOT  ·  " .. tostring(loot.id)
-        text.TextColor3 = LOOT_COLOR
+        text.Text = item.label
+        text.TextColor3 = item.color
         text.TextStrokeColor3 = Color3.fromRGB(9, 12, 19)
         text.TextStrokeTransparency = 0.18
         text.Font = Enum.Font.GothamBold
         text.TextSize = 12
+        text.TextWrapped = true
         text.Parent = billboard
 
         self.visuals[loot.instance] = {
             border = loot.border,
+            signature = item.signature,
             highlight = highlight,
             billboard = billboard,
         }
@@ -2173,14 +2297,16 @@ __factories["Features/LootESP"] = function()
                 and self.mapProvider:isLootAvailable(loot.instance)
             then
                 seen[loot.instance] = true
+                local item = self.lootCatalog:get(loot.id)
                 local visual = self.visuals[loot.instance]
                 if not visual
                     or visual.border ~= loot.border
+                    or visual.signature ~= item.signature
                     or not visual.highlight.Parent
                     or not visual.billboard.Parent
                 then
                     self:_destroyVisual(loot.instance)
-                    self:_createVisual(loot)
+                    self:_createVisual(loot, item)
                 end
             end
         end
@@ -2243,7 +2369,11 @@ __factories["Features/LootESP"] = function()
             task.spawn(function()
                 self:_loop(generation)
             end)
-            self.onStatus("Loot ESP: loot disponivel destacado em dourado")
+            if self.lootCatalog:isLoaded() then
+                self.onStatus("Loot ESP: nome, valor e cor por preco")
+            else
+                self.onStatus("Loot ESP: catalogo indisponivel; usando IDs")
+            end
         else
             self:stop()
             self.onStatus("Loot ESP: OFF")
@@ -2266,6 +2396,353 @@ __factories["Features/LootESP"] = function()
     end
 
     return LootESP
+end
+
+__factories["Features/PlayerOverrides"] = function()
+    local Players = game:GetService("Players")
+    local RunService = game:GetService("RunService")
+
+    local Config = __require("Config")
+    local Runtime = __require("Core/Runtime")
+
+    local PlayerOverrides = {}
+    PlayerOverrides.__index = PlayerOverrides
+
+    local function clamp(value, minimum, maximum, fallback)
+        return math.clamp(tonumber(value) or fallback, minimum, maximum)
+    end
+
+    function PlayerOverrides.new(onStatus)
+        local player = Players.LocalPlayer
+        local humanoid = Runtime.getHumanoid(player)
+        local walkSpeed = player:GetAttribute("WalkSpeed")
+        if typeof(walkSpeed) ~= "number" and humanoid then
+            walkSpeed = humanoid.WalkSpeed
+        end
+        local jumpHeight = player:GetAttribute("JumpHeight")
+        if typeof(jumpHeight) ~= "number" and humanoid then
+            jumpHeight = humanoid.JumpHeight
+        end
+
+        local self = setmetatable({
+            onStatus = onStatus or function() end,
+            player = player,
+            enabled = true,
+            walkSpeedEnabled = false,
+            jumpHeightEnabled = false,
+            walkSpeed = clamp(
+                walkSpeed,
+                Config.PLAYER.MIN_WALK_SPEED,
+                Config.PLAYER.MAX_WALK_SPEED,
+                Config.PLAYER.DEFAULT_WALK_SPEED
+            ),
+            jumpHeight = clamp(
+                jumpHeight,
+                Config.PLAYER.MIN_JUMP_HEIGHT,
+                Config.PLAYER.MAX_JUMP_HEIGHT,
+                Config.PLAYER.DEFAULT_JUMP_HEIGHT
+            ),
+            originalAttributes = {},
+            humanoidOriginals = setmetatable({}, { __mode = "k" }),
+            connections = {},
+            humanoidConnections = {},
+            humanoid = nil,
+            writing = false,
+            destroyed = false,
+        }, PlayerOverrides)
+
+        table.insert(self.connections, player.CharacterAdded:Connect(function(character)
+            local nextHumanoid = character:WaitForChild("Humanoid", 10)
+            if nextHumanoid and nextHumanoid:IsA("Humanoid") then
+                self:_bindHumanoid(nextHumanoid)
+            end
+        end))
+        table.insert(self.connections, player:GetAttributeChangedSignal("WalkSpeed"):Connect(function()
+            self:_attributeChanged("WalkSpeed")
+        end))
+        table.insert(self.connections, player:GetAttributeChangedSignal("JumpHeight"):Connect(function()
+            self:_attributeChanged("JumpHeight")
+        end))
+        table.insert(self.connections, RunService.Stepped:Connect(function()
+            self:_enforce()
+        end))
+        self:_bindHumanoid(humanoid)
+        return self
+    end
+
+    function PlayerOverrides:_captureAttribute(name)
+        if self.originalAttributes[name] then
+            return
+        end
+        local value = self.player:GetAttribute(name)
+        self.originalAttributes[name] = {
+            existed = value ~= nil,
+            value = value,
+        }
+    end
+
+    function PlayerOverrides:_attributeChanged(name)
+        if self.destroyed or self.writing then
+            return
+        end
+        local isEnabled = name == "WalkSpeed"
+            and self.walkSpeedEnabled
+            or name == "JumpHeight" and self.jumpHeightEnabled
+        if not isEnabled then
+            return
+        end
+        local original = self.originalAttributes[name]
+        if original then
+            local value = self.player:GetAttribute(name)
+            local target = name == "WalkSpeed" and self.walkSpeed or self.jumpHeight
+            if value ~= target then
+                original.existed = value ~= nil
+                original.value = value
+            end
+        end
+        self:_enforce()
+    end
+
+    function PlayerOverrides:_disconnectHumanoid()
+        for _, connection in ipairs(self.humanoidConnections) do
+            connection:Disconnect()
+        end
+        table.clear(self.humanoidConnections)
+        self.humanoid = nil
+    end
+
+    function PlayerOverrides:_captureHumanoid(humanoid)
+        if not humanoid or not humanoid.Parent then
+            return nil
+        end
+        local original = self.humanoidOriginals[humanoid]
+        if not original then
+            original = {}
+            self.humanoidOriginals[humanoid] = original
+        end
+        if self.walkSpeedEnabled and original.walkSpeed == nil then
+            original.walkSpeed = humanoid.WalkSpeed
+        end
+        if self.jumpHeightEnabled and original.jumpHeight == nil then
+            original.jumpHeight = humanoid.JumpHeight
+        end
+        return original
+    end
+
+    function PlayerOverrides:_humanoidChanged(property)
+        if self.destroyed or self.writing or not self.humanoid then
+            return
+        end
+        local isEnabled = property == "WalkSpeed"
+            and self.walkSpeedEnabled
+            or property == "JumpHeight" and self.jumpHeightEnabled
+        if not isEnabled then
+            return
+        end
+        local original = self.humanoidOriginals[self.humanoid]
+        if original then
+            if property == "WalkSpeed" then
+                if self.humanoid.WalkSpeed ~= self.walkSpeed then
+                    original.walkSpeed = self.humanoid.WalkSpeed
+                end
+            else
+                if self.humanoid.JumpHeight ~= self.jumpHeight then
+                    original.jumpHeight = self.humanoid.JumpHeight
+                end
+            end
+        end
+        self:_enforce()
+    end
+
+    function PlayerOverrides:_bindHumanoid(humanoid)
+        self:_disconnectHumanoid()
+        if not humanoid or not humanoid.Parent then
+            return
+        end
+        self.humanoid = humanoid
+        table.insert(self.humanoidConnections, humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+            self:_humanoidChanged("WalkSpeed")
+        end))
+        table.insert(self.humanoidConnections, humanoid:GetPropertyChangedSignal("JumpHeight"):Connect(function()
+            self:_humanoidChanged("JumpHeight")
+        end))
+        self:_captureHumanoid(humanoid)
+        self:_enforce()
+    end
+
+    function PlayerOverrides:_enforce()
+        if self.destroyed or not self.enabled or self.writing then
+            return
+        end
+        local humanoid = Runtime.getHumanoid(self.player)
+        if humanoid and humanoid ~= self.humanoid then
+            self:_bindHumanoid(humanoid)
+            return
+        end
+
+        self.writing = true
+        if self.walkSpeedEnabled then
+            self:_captureAttribute("WalkSpeed")
+            if self.player:GetAttribute("WalkSpeed") ~= self.walkSpeed then
+                self.player:SetAttribute("WalkSpeed", self.walkSpeed)
+            end
+            if humanoid then
+                self:_captureHumanoid(humanoid)
+                if humanoid.WalkSpeed ~= self.walkSpeed then
+                    humanoid.WalkSpeed = self.walkSpeed
+                end
+            end
+        end
+        if self.jumpHeightEnabled then
+            self:_captureAttribute("JumpHeight")
+            if self.player:GetAttribute("JumpHeight") ~= self.jumpHeight then
+                self.player:SetAttribute("JumpHeight", self.jumpHeight)
+            end
+            if humanoid then
+                self:_captureHumanoid(humanoid)
+                if humanoid.JumpHeight ~= self.jumpHeight then
+                    humanoid.JumpHeight = self.jumpHeight
+                end
+            end
+        end
+        self.writing = false
+    end
+
+    function PlayerOverrides:_restoreAttribute(name)
+        local original = self.originalAttributes[name]
+        self.originalAttributes[name] = nil
+        if not original then
+            return
+        end
+        if original.existed then
+            self.player:SetAttribute(name, original.value)
+        else
+            self.player:SetAttribute(name, nil)
+        end
+    end
+
+    function PlayerOverrides:_restoreHumanoids(property)
+        for humanoid, original in pairs(self.humanoidOriginals) do
+            if humanoid.Parent then
+                local value = original[property]
+                if value ~= nil then
+                    if property == "walkSpeed" then
+                        humanoid.WalkSpeed = value
+                    else
+                        humanoid.JumpHeight = value
+                    end
+                end
+            end
+            original[property] = nil
+            if original.walkSpeed == nil and original.jumpHeight == nil then
+                self.humanoidOriginals[humanoid] = nil
+            end
+        end
+    end
+
+    function PlayerOverrides:getWalkSpeed()
+        return self.walkSpeed
+    end
+
+    function PlayerOverrides:setWalkSpeed(value)
+        self.walkSpeed = clamp(
+            value,
+            Config.PLAYER.MIN_WALK_SPEED,
+            Config.PLAYER.MAX_WALK_SPEED,
+            Config.PLAYER.DEFAULT_WALK_SPEED
+        )
+        self:_enforce()
+        return self.walkSpeed
+    end
+
+    function PlayerOverrides:getJumpHeight()
+        return self.jumpHeight
+    end
+
+    function PlayerOverrides:setJumpHeight(value)
+        self.jumpHeight = clamp(
+            value,
+            Config.PLAYER.MIN_JUMP_HEIGHT,
+            Config.PLAYER.MAX_JUMP_HEIGHT,
+            Config.PLAYER.DEFAULT_JUMP_HEIGHT
+        )
+        self:_enforce()
+        return self.jumpHeight
+    end
+
+    function PlayerOverrides:setWalkSpeedEnabled(enabled)
+        enabled = enabled == true
+        if self.walkSpeedEnabled == enabled then
+            return
+        end
+        if enabled then
+            self.walkSpeedEnabled = true
+            self:_captureAttribute("WalkSpeed")
+            self:_captureHumanoid(Runtime.getHumanoid(self.player))
+            self:_enforce()
+            self.onStatus("Player: velocidade fixada em " .. tostring(math.floor(self.walkSpeed + 0.5)))
+            return
+        end
+
+        self.walkSpeedEnabled = false
+        self.writing = true
+        self:_restoreAttribute("WalkSpeed")
+        self:_restoreHumanoids("walkSpeed")
+        self.writing = false
+        self.onStatus("Player: velocidade restaurada")
+    end
+
+    function PlayerOverrides:setJumpHeightEnabled(enabled)
+        enabled = enabled == true
+        if self.jumpHeightEnabled == enabled then
+            return
+        end
+        if enabled then
+            self.jumpHeightEnabled = true
+            self:_captureAttribute("JumpHeight")
+            self:_captureHumanoid(Runtime.getHumanoid(self.player))
+            self:_enforce()
+            self.onStatus("Player: pulo fixado em " .. tostring(math.floor(self.jumpHeight + 0.5)))
+            return
+        end
+
+        self.jumpHeightEnabled = false
+        self.writing = true
+        self:_restoreAttribute("JumpHeight")
+        self:_restoreHumanoids("jumpHeight")
+        self.writing = false
+        self.onStatus("Player: pulo restaurado")
+    end
+
+    function PlayerOverrides:setEnabled(enabled)
+        self.enabled = enabled == true
+        if self.enabled then
+            self:_enforce()
+        else
+            self:setWalkSpeedEnabled(false)
+            self:setJumpHeightEnabled(false)
+        end
+    end
+
+    function PlayerOverrides:stop()
+        self:setWalkSpeedEnabled(false)
+        self:setJumpHeightEnabled(false)
+    end
+
+    function PlayerOverrides:Destroy()
+        if self.destroyed then
+            return
+        end
+        self:stop()
+        self.destroyed = true
+        self:_disconnectHumanoid()
+        for _, connection in ipairs(self.connections) do
+            connection:Disconnect()
+        end
+        table.clear(self.connections)
+    end
+
+    return PlayerOverrides
 end
 
 __factories["Features/TeamESP"] = function()
@@ -2399,6 +2876,107 @@ __factories["Features/TeamESP"] = function()
     end
 
     return TeamESP
+end
+
+__factories["Providers/LootCatalog"] = function()
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+    local LootPresentation = __require("Core/LootPresentation")
+
+    local LootCatalog = {}
+    LootCatalog.__index = LootCatalog
+
+    local RARITY_NAMES = table.freeze({
+        [0] = "Default",
+        [1] = "Legacy",
+        [2] = "Common",
+        [3] = "Uncommon",
+        [4] = "Rare",
+        [5] = "Epic",
+        [6] = "Legendary",
+        [7] = "Spectrum",
+        [8] = "Reaper",
+        [9] = "Artifact",
+        [10] = "Limited",
+    })
+
+    local COLORS = table.freeze({
+        spectrum = Color3.fromRGB(205, 92, 255),
+        legendary = Color3.fromRGB(255, 174, 62),
+        epic = Color3.fromRGB(174, 104, 255),
+        rare = Color3.fromRGB(80, 164, 255),
+        uncommon = Color3.fromRGB(72, 214, 132),
+        common = Color3.fromRGB(218, 225, 238),
+        unknown = Color3.fromRGB(158, 170, 194),
+    })
+
+    function LootCatalog.new()
+        local self = setmetatable({
+            database = nil,
+            retryAt = 0,
+        }, LootCatalog)
+        self:_load()
+        return self
+    end
+
+    function LootCatalog:_load()
+        local now = os.clock()
+        if self.database or now < self.retryAt then
+            return self.database ~= nil
+        end
+        self.retryAt = now + 2
+
+        local databases = ReplicatedStorage:FindFirstChild("ItemDatabases")
+        local lootModule = databases and databases:FindFirstChild("Loot")
+        if not lootModule or not lootModule:IsA("ModuleScript") then
+            return false
+        end
+
+        local ok, result = pcall(require, lootModule)
+        if ok and typeof(result) == "table" then
+            self.database = result
+            return true
+        end
+        return false
+    end
+
+    function LootCatalog:isLoaded()
+        return self.database ~= nil or self:_load()
+    end
+
+    function LootCatalog:get(id)
+        id = tostring(id or "")
+        self:_load()
+        local entry = self.database and self.database[id] or nil
+        local name = entry and entry.Name
+        if typeof(name) ~= "string" or name == "" then
+            name = id ~= "" and id or "Loot desconhecido"
+        end
+
+        local sellPrice = LootPresentation.normalizeValue(entry and entry.SellPrice)
+        local rarityValue = entry and tonumber(entry.Rarity) or nil
+        local rarityName = rarityValue and RARITY_NAMES[rarityValue] or "Unknown"
+        local tier = LootPresentation.tierForValue(sellPrice)
+
+        return {
+            id = id,
+            name = name,
+            sellPrice = sellPrice,
+            rarity = rarityName,
+            tier = tier,
+            color = COLORS[tier],
+            label = LootPresentation.formatLabel(name, sellPrice),
+            signature = table.concat({
+                id,
+                name,
+                tostring(sellPrice),
+                rarityName,
+                tier,
+            }, "\0"),
+        }
+    end
+
+    return LootCatalog
 end
 
 __factories["Providers/MapProvider"] = function()
@@ -4052,6 +4630,7 @@ __factories["init"] = function()
     local Config = __require("Config")
     local MovementCoordinator = __require("Core/MovementCoordinator")
     local MapProvider = __require("Providers/MapProvider")
+    local LootCatalog = __require("Providers/LootCatalog")
     local UI
     if Config.UI_STYLE == "Legacy" then
         UI = __require("UI/UI")
@@ -4067,6 +4646,7 @@ __factories["init"] = function()
     local AutoEvade = __require("Features/AutoEvade")
     local AttributeOverrides = __require("Features/AttributeOverrides")
     local FOVOverride = __require("Features/FOVOverride")
+    local PlayerOverrides = __require("Features/PlayerOverrides")
     local AutoServerHop = __require("Features/AutoServerHop")
     local StateStore = __require("Core/StateStore")
     local ExecutorSettings = __require("Core/ExecutorSettings")
@@ -4118,6 +4698,7 @@ __factories["init"] = function()
 
         local movement = MovementCoordinator.new()
         local mapProvider = MapProvider.new()
+        local lootCatalog = LootCatalog.new()
         local stateStore = StateStore.new()
         local executorSettings = ExecutorSettings.new()
         local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
@@ -4138,6 +4719,7 @@ __factories["init"] = function()
 
         app.movement = movement
         app.mapProvider = mapProvider
+        app.lootCatalog = lootCatalog
         app.stateStore = stateStore
         app.executorSettings = executorSettings
         app.window = window
@@ -4213,11 +4795,12 @@ __factories["init"] = function()
         local killAll = KillAll.new(movement, setStatus)
         local autoRevive = AutoRevive.new(movement, setStatus)
         local teamESP = TeamESP.new(setStatus)
-        local lootESP = LootESP.new(mapProvider, setStatus)
+        local lootESP = LootESP.new(mapProvider, lootCatalog, setStatus)
         local autoLoot = AutoLoot.new(movement, mapProvider, setStatus)
         local autoEvade = AutoEvade.new(movement, mapProvider, setStatus)
         local attributeOverrides = AttributeOverrides.new(setStatus)
         local fovOverride = FOVOverride.new(setStatus)
+        local playerOverrides = PlayerOverrides.new(setStatus)
         local autoServerHop = AutoServerHop.new(setStatus)
 
         app.controllers = {
@@ -4230,6 +4813,7 @@ __factories["init"] = function()
             autoEvade,
             attributeOverrides,
             fovOverride,
+            playerOverrides,
             autoServerHop,
         }
 
@@ -4280,20 +4864,15 @@ __factories["init"] = function()
         persistentCheckbox(visualPage, "Team ESP — azul/vermelho", "feature.teamESP", function(enabled)
             teamESP:setEnabled(enabled)
         end)
-        persistentCheckbox(visualPage, "Loot ESP — dourado", "feature.lootESP", function(enabled)
+        persistentCheckbox(visualPage, "Loot ESP — nome, valor e cor", "feature.lootESP", function(enabled)
             lootESP:setEnabled(enabled)
         end)
         local lootESPNote = contentItem(UI.info(
             visualPage,
-            "Mostra somente loot visivel e remove o destaque assim que o item for coletado.",
+            "Mostra nome e valor de venda. A cor muda entre 1, 3, 5, 15, 40 e 200 moedas.",
             42
         ))
         lootESPNote.TextColor3 = window.colors.muted
-
-        contentItem(UI.section(visualPage, "CAMERA"))
-        persistentCheckbox(visualPage, "Remover mudancas de FOV (fixar 70)", "feature.fovOverride", function(enabled)
-            fovOverride:setEnabled(enabled)
-        end)
 
         contentItem(UI.section(miscPage, "DESBLOQUEIOS LOCAIS"))
         persistentCheckbox(miscPage, "Unlock All Gamepasses", "feature.unlockAllGamepasses", function(enabled)
@@ -4315,6 +4894,133 @@ __factories["init"] = function()
             42
         ))
         localOverrideNote.TextColor3 = window.colors.muted
+
+        contentItem(UI.section(miscPage, "PLAYER"))
+        local savedWalkSpeed = stateStore:getNumber(
+            "value.walkSpeed",
+            playerOverrides:getWalkSpeed(),
+            Config.PLAYER.MIN_WALK_SPEED,
+            Config.PLAYER.MAX_WALK_SPEED
+        )
+        if not stateStore:has("value.walkSpeed") then
+            stateStore:setNumber(
+                "value.walkSpeed",
+                savedWalkSpeed,
+                Config.PLAYER.MIN_WALK_SPEED,
+                Config.PLAYER.MAX_WALK_SPEED
+            )
+        end
+        playerOverrides:setWalkSpeed(savedWalkSpeed)
+        contentItem(UI.numberInput(
+            miscPage,
+            "Velocidade (WalkSpeed)",
+            savedWalkSpeed,
+            Config.PLAYER.MIN_WALK_SPEED,
+            Config.PLAYER.MAX_WALK_SPEED,
+            function(value)
+                local applied = playerOverrides:setWalkSpeed(value)
+                stateStore:setNumber(
+                    "value.walkSpeed",
+                    applied,
+                    Config.PLAYER.MIN_WALK_SPEED,
+                    Config.PLAYER.MAX_WALK_SPEED
+                )
+            end
+        ))
+        persistentCheckbox(
+            miscPage,
+            "Fixar velocidade",
+            "feature.walkSpeedOverride",
+            function(enabled)
+                playerOverrides:setWalkSpeedEnabled(enabled)
+            end
+        )
+
+        local savedJumpHeight = stateStore:getNumber(
+            "value.jumpHeight",
+            playerOverrides:getJumpHeight(),
+            Config.PLAYER.MIN_JUMP_HEIGHT,
+            Config.PLAYER.MAX_JUMP_HEIGHT
+        )
+        if not stateStore:has("value.jumpHeight") then
+            stateStore:setNumber(
+                "value.jumpHeight",
+                savedJumpHeight,
+                Config.PLAYER.MIN_JUMP_HEIGHT,
+                Config.PLAYER.MAX_JUMP_HEIGHT
+            )
+        end
+        playerOverrides:setJumpHeight(savedJumpHeight)
+        contentItem(UI.numberInput(
+            miscPage,
+            "Altura do pulo (JumpHeight)",
+            savedJumpHeight,
+            Config.PLAYER.MIN_JUMP_HEIGHT,
+            Config.PLAYER.MAX_JUMP_HEIGHT,
+            function(value)
+                local applied = playerOverrides:setJumpHeight(value)
+                stateStore:setNumber(
+                    "value.jumpHeight",
+                    applied,
+                    Config.PLAYER.MIN_JUMP_HEIGHT,
+                    Config.PLAYER.MAX_JUMP_HEIGHT
+                )
+            end
+        ))
+        persistentCheckbox(
+            miscPage,
+            "Fixar altura do pulo",
+            "feature.jumpHeightOverride",
+            function(enabled)
+                playerOverrides:setJumpHeightEnabled(enabled)
+            end
+        )
+
+        local savedFOV = stateStore:getNumber(
+            "value.fov",
+            fovOverride:getFOV(),
+            Config.CAMERA.MIN_FOV,
+            Config.CAMERA.MAX_FOV
+        )
+        if not stateStore:has("value.fov") then
+            stateStore:setNumber(
+                "value.fov",
+                savedFOV,
+                Config.CAMERA.MIN_FOV,
+                Config.CAMERA.MAX_FOV
+            )
+        end
+        fovOverride:setFOV(savedFOV)
+        contentItem(UI.numberInput(
+            miscPage,
+            "Campo de visao (FOV)",
+            savedFOV,
+            Config.CAMERA.MIN_FOV,
+            Config.CAMERA.MAX_FOV,
+            function(value)
+                local applied = fovOverride:setFOV(value)
+                stateStore:setNumber(
+                    "value.fov",
+                    applied,
+                    Config.CAMERA.MIN_FOV,
+                    Config.CAMERA.MAX_FOV
+                )
+            end
+        ))
+        persistentCheckbox(
+            miscPage,
+            "Fixar campo de visao",
+            "feature.fovOverride",
+            function(enabled)
+                fovOverride:setEnabled(enabled)
+            end
+        )
+        local playerNote = contentItem(UI.info(
+            miscPage,
+            "Valores locais e limitados. Ao desligar, o Hub restaura atributos, Humanoid e camera.",
+            42
+        ))
+        playerNote.TextColor3 = window.colors.muted
 
         if typeof(UI.segmented) == "function" and typeof(window.setWidthPercent) == "function" then
             contentItem(UI.section(settingsPage, "INTERFACE"))
