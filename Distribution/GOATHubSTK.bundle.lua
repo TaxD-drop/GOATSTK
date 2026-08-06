@@ -37,6 +37,7 @@ local __config = (function()
             COMPACT_HEADER_HEIGHT = 48,
             TAB_HEIGHT = 44,
             STATUS_HEIGHT = 34,
+            ICON_PATH = "logo.ico",
         }),
 
         DISTANCES = table.freeze({
@@ -3557,19 +3558,46 @@ __factories["UI/ModernUI"] = function()
         dragHandle.Parent = topBar
         self.dragHandle = dragHandle
 
-        local brand = Instance.new("TextLabel")
+        local brand = Instance.new("Frame")
         brand.Name = "Brand"
         brand.AnchorPoint = Vector2.new(0, 0.5)
         brand.Position = UDim2.new(0, 12, 0.5, 0)
         brand.Size = UDim2.fromOffset(32, 32)
         brand.BackgroundColor3 = COLORS.accent
-        brand.Text = "G"
-        brand.TextColor3 = COLORS.text
-        brand.Font = Enum.Font.GothamBold
-        brand.TextSize = 16
         brand.Parent = topBar
         corner(brand, 9)
         gradient(brand, COLORS.accent, COLORS.accentBright, 35)
+
+        local brandIcon = Instance.new("ImageLabel")
+        brandIcon.Name = "Icon"
+        brandIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+        brandIcon.Position = UDim2.fromScale(0.5, 0.5)
+        brandIcon.Size = UDim2.fromScale(0.82, 0.82)
+        brandIcon.BackgroundTransparency = 1
+        brandIcon.ScaleType = Enum.ScaleType.Fit
+        brandIcon.Image = ""
+        brandIcon.Parent = brand
+
+        local iconPath = options.iconPath
+            or (Config.MODERN_UI and Config.MODERN_UI.ICON_PATH)
+            or "logo.ico"
+        local assetLoader = typeof(getcustomasset) == "function" and getcustomasset
+            or (typeof(getsynasset) == "function" and getsynasset or nil)
+        if assetLoader then
+            local ok, asset = pcall(assetLoader, iconPath)
+            if ok and typeof(asset) == "string" then
+                brandIcon.Image = asset
+            end
+        end
+
+        local brandFallback = label(brand, "G", 16)
+        brandFallback.AnchorPoint = Vector2.new(0.5, 0.5)
+        brandFallback.Position = UDim2.fromScale(0.5, 0.5)
+        brandFallback.Size = UDim2.fromScale(1, 1)
+        brandFallback.TextXAlignment = Enum.TextXAlignment.Center
+        brandFallback.TextYAlignment = Enum.TextYAlignment.Center
+        brandFallback.Font = Enum.Font.GothamBold
+        brandFallback.Visible = brandIcon.Image == ""
 
         local titleLabel = label(topBar, title or Config.MODERN_UI.TITLE, 14)
         titleLabel.Name = "Title"
