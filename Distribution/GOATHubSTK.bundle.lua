@@ -3603,7 +3603,7 @@ __factories["UI/ModernUI"] = function()
 
     local COLORS = table.freeze({
         background = Color3.fromRGB(7, 10, 18),
-        panel = Color3.fromRGB(11, 16, 29),
+        panel = Color3.fromRGB(160, 224, 31),
         header = Color3.fromRGB(14, 20, 35),
         surface = Color3.fromRGB(17, 24, 42),
         card = Color3.fromRGB(22, 31, 52),
