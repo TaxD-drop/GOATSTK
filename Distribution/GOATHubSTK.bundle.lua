@@ -13,6 +13,15 @@ local __config = (function()
 
         UI_STYLE = "Modern",
 
+        -- O arquivo fica no repositorio e e armazenado pelo executor somente neste
+        -- caminho fixo. Mantenha a URL raw HTTPS apontando para o arquivo ICO real.
+        ICON = table.freeze({
+            URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/GOATHubSTK/GOATHubSTKClient/UI/Ico/logo.ico",
+            CACHE_DIRECTORY = "GOATHub/UI/Ico",
+            CACHE_FILE = "logo.ico",
+            MAX_BYTES = 512 * 1024,
+        }),
+
         UI = table.freeze({
             TITLE = "GOAT Hub — STK",
             PADDING = 12,
@@ -37,7 +46,6 @@ local __config = (function()
             COMPACT_HEADER_HEIGHT = 48,
             TAB_HEIGHT = 44,
             STATUS_HEIGHT = 34,
-            ICON_PATH = "logo.ico",
         }),
 
         DISTANCES = table.freeze({
@@ -269,6 +277,146 @@ __factories["Core/ExecutorSettings"] = function()
     end
 
     return ExecutorSettings
+end
+
+__factories["Core/IconCache"] = function()
+    -- Baixa uma unica vez o icone da UI e o converte para um asset local do executor.
+    -- ImageLabel.Image precisa receber o URI retornado por getcustomasset/getsynasset,
+    -- nunca os bytes do ICO nem a URL raw do GitHub.
+
+    local Config = __require("Config")
+
+    local IconCache = {}
+
+    local CACHE_DIRECTORY = "GOATHub/UI/Ico"
+    local CACHE_PATH = CACHE_DIRECTORY .. "/logo.ico"
+    local MAX_BYTES = 512 * 1024
+    local attempted = false
+    local cachedAsset = nil
+
+    local function validIco(source)
+        return typeof(source) == "string"
+            and #source >= 4
+            and #source <= MAX_BYTES
+            and source:sub(1, 4) == "\0\0\1\0"
+    end
+
+    local function cachePath()
+        local iconConfig = Config.ICON
+        if typeof(iconConfig) == "table"
+            and iconConfig.CACHE_DIRECTORY == CACHE_DIRECTORY
+            and iconConfig.CACHE_FILE == "logo.ico" then
+            return CACHE_PATH
+        end
+        return CACHE_PATH
+    end
+
+    local function ensureCacheDirectory()
+        if typeof(makefolder) ~= "function" then
+            return false
+        end
+        for _, directory in ipairs({ "GOATHub", "GOATHub/UI", CACHE_DIRECTORY }) do
+            local exists = false
+            if typeof(isfolder) == "function" then
+                local ok, value = pcall(isfolder, directory)
+                exists = ok and value == true
+            end
+            if not exists then
+                local ok = pcall(makefolder, directory)
+                if not ok then
+                    return false
+                end
+            end
+        end
+        return true
+    end
+
+    local function readCachedIcon(path)
+        if typeof(readfile) ~= "function" then
+            return nil
+        end
+        if typeof(isfile) == "function" then
+            local existsOk, exists = pcall(isfile, path)
+            if not existsOk or not exists then
+                return nil
+            end
+        end
+        local readOk, source = pcall(readfile, path)
+        if readOk and validIco(source) then
+            return source
+        end
+        return nil
+    end
+
+    local function downloadIcon()
+        local iconConfig = Config.ICON
+        local url = typeof(iconConfig) == "table" and iconConfig.URL or nil
+        if typeof(url) ~= "string" or not url:match("^https://raw%.githubusercontent%.com/") then
+            return nil
+        end
+        local downloadOk, source = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if not downloadOk or not validIco(source) then
+            return nil
+        end
+        return source
+    end
+
+    local function cacheIcon(path, source)
+        if typeof(writefile) ~= "function" or not ensureCacheDirectory() then
+            return false
+        end
+        local writeOk = pcall(writefile, path, source)
+        return writeOk
+    end
+
+    local function assetLoader()
+        if typeof(getcustomasset) == "function" then
+            return getcustomasset
+        end
+        if typeof(getsynasset) == "function" then
+            return getsynasset
+        end
+        return nil
+    end
+
+    function IconCache.getAsset()
+        if attempted then
+            return cachedAsset
+        end
+        attempted = true
+
+        local path = cachePath()
+        local source = readCachedIcon(path)
+        if not source then
+            source = downloadIcon()
+            if not source or not cacheIcon(path, source) then
+                return nil
+            end
+        end
+
+        local loader = assetLoader()
+        if not loader then
+            return nil
+        end
+        local assetOk, asset = pcall(loader, path)
+        if assetOk and typeof(asset) == "string" and asset ~= "" then
+            cachedAsset = asset
+        end
+        return cachedAsset
+    end
+
+    function IconCache.loadAsync(callback)
+        task.spawn(function()
+            local asset = IconCache.getAsset()
+            if typeof(callback) == "function" then
+                callback(asset)
+            end
+        end)
+    end
+
+    return IconCache
 end
 
 __factories["Core/LootPresentation"] = function()
@@ -3411,6 +3559,7 @@ __factories["UI/ModernUI"] = function()
     local Workspace = game:GetService("Workspace")
 
     local Config = __require("Config")
+    local IconCache = __require("Core/IconCache")
     local Layout = __require("UI/Layout")
 
     local UI = {}
@@ -3578,18 +3727,6 @@ __factories["UI/ModernUI"] = function()
         brandIcon.Image = ""
         brandIcon.Parent = brand
 
-        local iconPath = options.iconPath
-            or (Config.MODERN_UI and Config.MODERN_UI.ICON_PATH)
-            or "logo.ico"
-        local assetLoader = typeof(getcustomasset) == "function" and getcustomasset
-            or (typeof(getsynasset) == "function" and getsynasset or nil)
-        if assetLoader then
-            local ok, asset = pcall(assetLoader, iconPath)
-            if ok and typeof(asset) == "string" then
-                brandIcon.Image = asset
-            end
-        end
-
         local brandFallback = label(brand, "G", 16)
         brandFallback.AnchorPoint = Vector2.new(0.5, 0.5)
         brandFallback.Position = UDim2.fromScale(0.5, 0.5)
@@ -3597,7 +3734,17 @@ __factories["UI/ModernUI"] = function()
         brandFallback.TextXAlignment = Enum.TextXAlignment.Center
         brandFallback.TextYAlignment = Enum.TextYAlignment.Center
         brandFallback.Font = Enum.Font.GothamBold
-        brandFallback.Visible = brandIcon.Image == ""
+        brandFallback.Visible = true
+
+        IconCache.loadAsync(function(asset)
+            if self.destroyed or not brandIcon.Parent or not brandFallback.Parent then
+                return
+            end
+            if typeof(asset) == "string" and asset ~= "" then
+                brandIcon.Image = asset
+                brandFallback.Visible = false
+            end
+        end)
 
         local titleLabel = label(topBar, title or Config.MODERN_UI.TITLE, 14)
         titleLabel.Name = "Title"
