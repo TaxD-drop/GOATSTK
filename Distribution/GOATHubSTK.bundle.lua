@@ -289,7 +289,8 @@ __factories["Core/IconCache"] = function()
     local IconCache = {}
 
     local CACHE_DIRECTORY = "GOATHub/UI/Ico"
-    local CACHE_PATH = CACHE_DIRECTORY .. "/logo.ico"
+    local ICO_CACHE_PATH = CACHE_DIRECTORY .. "/logo.ico"
+    local PNG_CACHE_PATH = CACHE_DIRECTORY .. "/logo.png"
     local MAX_BYTES = 512 * 1024
     local attempted = false
     local cachedAsset = nil
@@ -301,14 +302,11 @@ __factories["Core/IconCache"] = function()
             and source:sub(1, 4) == "\0\0\1\0"
     end
 
-    local function cachePath()
-        local iconConfig = Config.ICON
-        if typeof(iconConfig) == "table"
-            and iconConfig.CACHE_DIRECTORY == CACHE_DIRECTORY
-            and iconConfig.CACHE_FILE == "logo.ico" then
-            return CACHE_PATH
-        end
-        return CACHE_PATH
+    local function validPng(source)
+        return typeof(source) == "string"
+            and #source >= 8
+            and #source <= MAX_BYTES
+            and source:sub(1, 8) == "\137PNG\13\10\26\10"
     end
 
     local function ensureCacheDirectory()
@@ -331,7 +329,7 @@ __factories["Core/IconCache"] = function()
         return true
     end
 
-    local function readCachedIcon(path)
+    local function readCachedFile(path, validator)
         if typeof(readfile) ~= "function" then
             return nil
         end
@@ -342,10 +340,19 @@ __factories["Core/IconCache"] = function()
             end
         end
         local readOk, source = pcall(readfile, path)
-        if readOk and validIco(source) then
+        if readOk and validator(source) then
             return source
         end
         return nil
+    end
+
+    local function embeddedPng(ico)
+        local firstByte = ico:find("\137PNG\13\10\26\10", 1, true)
+        if not firstByte then
+            return nil
+        end
+        local png = ico:sub(firstByte)
+        return if validPng(png) then png else nil
     end
 
     local function downloadIcon()
@@ -387,11 +394,20 @@ __factories["Core/IconCache"] = function()
         end
         attempted = true
 
-        local path = cachePath()
-        local source = readCachedIcon(path)
+        local source = readCachedFile(ICO_CACHE_PATH, validIco)
         if not source then
             source = downloadIcon()
-            if not source or not cacheIcon(path, source) then
+            if not source or not cacheIcon(ICO_CACHE_PATH, source) then
+                return nil
+            end
+        end
+
+        -- Roblox renderiza PNG de forma consistente; este ICO contem um PNG embutido.
+        -- Mantemos o ICO requisitado como cache de origem e extraimos o PNG uma vez.
+        local png = readCachedFile(PNG_CACHE_PATH, validPng)
+        if not png then
+            png = embeddedPng(source)
+            if not png or not cacheIcon(PNG_CACHE_PATH, png) then
                 return nil
             end
         end
@@ -400,7 +416,7 @@ __factories["Core/IconCache"] = function()
         if not loader then
             return nil
         end
-        local assetOk, asset = pcall(loader, path)
+        local assetOk, asset = pcall(loader, PNG_CACHE_PATH)
         if assetOk and typeof(asset) == "string" and asset ~= "" then
             cachedAsset = asset
         end
@@ -3554,6 +3570,7 @@ end
 
 __factories["UI/ModernUI"] = function()
     local Players = game:GetService("Players")
+    local ContentProvider = game:GetService("ContentProvider")
     local TweenService = game:GetService("TweenService")
     local UserInputService = game:GetService("UserInputService")
     local Workspace = game:GetService("Workspace")
@@ -3724,6 +3741,7 @@ __factories["UI/ModernUI"] = function()
         brandIcon.Size = UDim2.fromScale(0.82, 0.82)
         brandIcon.BackgroundTransparency = 1
         brandIcon.ScaleType = Enum.ScaleType.Fit
+        brandIcon.ImageTransparency = 1
         brandIcon.Image = ""
         brandIcon.Parent = brand
 
@@ -3742,7 +3760,16 @@ __factories["UI/ModernUI"] = function()
             end
             if typeof(asset) == "string" and asset ~= "" then
                 brandIcon.Image = asset
-                brandFallback.Visible = false
+                local preloaded = pcall(function()
+                    ContentProvider:PreloadAsync({ brandIcon })
+                end)
+                local known, loaded = pcall(function()
+                    return brandIcon.IsLoaded
+                end)
+                if preloaded and (not known or loaded) and not self.destroyed then
+                    brandIcon.ImageTransparency = 0
+                    brandFallback.Visible = false
+                end
             end
         end)
 
