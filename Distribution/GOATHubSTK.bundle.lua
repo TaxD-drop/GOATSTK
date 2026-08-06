@@ -1003,30 +1003,22 @@ __factories["Core/Theme"] = function()
         track = "Trilhos e controles",
     })
 
-    Theme.SWATCHES = table.freeze({
-        "#070A12", "#0B101D", "#172033", "#FFFFFF",
-        "#66738C", "#8B99B4", "#4F6BED", "#66D0FF",
-        "#071306", "#0C2109", "#163710", "#245F15",
-        "#51C925", "#8BEA5D", "#53E39A", "#F45B69",
-        "#FFB84D", "#A855F7",
-    })
-
     local PRESETS = {
         Dark = {
-            background = "#070A12",
-            panel = "#0B101D",
-            header = "#0E1423",
-            surface = "#11182A",
-            card = "#161F34",
-            cardHover = "#1C2741",
-            text = "#F2F6FF",
-            muted = "#8B99B4",
-            accent = "#5C7CFA",
-            accentBright = "#66D0FF",
+            background = "#030303",
+            panel = "#090909",
+            header = "#101010",
+            surface = "#151515",
+            card = "#1B1B1B",
+            cardHover = "#272727",
+            text = "#F5F5F5",
+            muted = "#9A9A9A",
+            accent = "#686868",
+            accentBright = "#D4D4D4",
             green = "#3ED38F",
             red = "#F45B69",
-            border = "#2B3955",
-            track = "#323D53",
+            border = "#303030",
+            track = "#3A3A3A",
         },
         Light = {
             background = "#E9EEF6",
@@ -1116,6 +1108,30 @@ __factories["Core/Theme"] = function()
             tonumber(normalized:sub(4, 5), 16),
             tonumber(normalized:sub(6, 7), 16)
         )
+    end
+
+    function Theme.fromColor3(color)
+        if typeof(color) ~= "Color3" then
+            return "#000000"
+        end
+        return string.format(
+            "#%02X%02X%02X",
+            math.clamp(math.floor(color.R * 255 + 0.5), 0, 255),
+            math.clamp(math.floor(color.G * 255 + 0.5), 0, 255),
+            math.clamp(math.floor(color.B * 255 + 0.5), 0, 255)
+        )
+    end
+
+    function Theme.hexToHSV(hex)
+        return Theme.toColor3(hex):ToHSV()
+    end
+
+    function Theme.hsvToHex(hue, saturation, value)
+        return Theme.fromColor3(Color3.fromHSV(
+            math.clamp(tonumber(hue) or 0, 0, 1),
+            math.clamp(tonumber(saturation) or 0, 0, 1),
+            math.clamp(tonumber(value) or 0, 0, 1)
+        ))
     end
 
     function Theme.resolveColors(name, custom)
@@ -3987,6 +4003,7 @@ __factories["UI/ModernUI"] = function()
         themed(topBar, "BackgroundColor3", "header")
         topBar.BorderSizePixel = 0
         topBar.Parent = frame
+        corner(topBar, 12)
         self.topBar = topBar
 
         local dragHandle = Instance.new("TextButton")
@@ -4091,6 +4108,7 @@ __factories["UI/ModernUI"] = function()
         themed(tabBar, "BackgroundColor3", "surface")
         tabBar.BorderSizePixel = 0
         tabBar.Parent = frame
+        corner(tabBar, 10)
         self.tabBar = tabBar
 
         local tabsContainer = Instance.new("Frame")
@@ -4169,6 +4187,7 @@ __factories["UI/ModernUI"] = function()
         themed(statusBar, "BackgroundColor3", "background")
         statusBar.BorderSizePixel = 0
         statusBar.Parent = frame
+        corner(statusBar, 10)
         self.statusBar = statusBar
 
         local statusDot = Instance.new("Frame")
@@ -4652,114 +4671,327 @@ __factories["UI/ModernUI"] = function()
         return row
     end
 
-    function UI.colorPicker(parent, text, initial, callback)
-        local selected = Theme.normalizeHex(initial) or "#000000"
+    function UI.themeEditor(parent, initialColors, callback)
+        local values = Theme.normalizeCustom(initialColors)
+        local selectedToken = "panel"
+        local hue, saturation, brightness = Theme.hexToHSV(values[selectedToken])
 
         local row = Instance.new("Frame")
-        row.Size = UDim2.new(1, 0, 0, 84)
+        row.Size = UDim2.new(1, 0, 0, 282)
         themed(row, "BackgroundColor3", "card")
         row.Parent = parent
         corner(row, 10)
         stroke(row, "border", 1, 0.22)
 
-        local title = label(row, text, 10)
-        title.Position = UDim2.fromOffset(13, 4)
-        title.Size = UDim2.new(1, -132, 0, 25)
-        themed(title, "TextColor3", "text")
+        local selectedLabel = label(row, Theme.LABELS[selectedToken], 10)
+        selectedLabel.Position = UDim2.fromOffset(13, 5)
+        selectedLabel.Size = UDim2.new(1, -146, 0, 26)
+        selectedLabel.Font = Enum.Font.GothamBold
 
         local preview = Instance.new("Frame")
         preview.AnchorPoint = Vector2.new(1, 0)
-        preview.Position = UDim2.new(1, -82, 0, 8)
-        preview.Size = UDim2.fromOffset(22, 22)
-        preview.BackgroundColor3 = Theme.toColor3(selected)
+        preview.Position = UDim2.new(1, -84, 0, 7)
+        preview.Size = UDim2.fromOffset(23, 23)
+        preview.BackgroundColor3 = Theme.toColor3(values[selectedToken])
         preview.Parent = row
         corner(preview, 6)
+        local previewStroke = Instance.new("UIStroke")
+        previewStroke.Color = Color3.fromRGB(255, 255, 255)
+        previewStroke.Transparency = 0.45
+        previewStroke.Parent = preview
 
         local hexBox = Instance.new("TextBox")
         hexBox.AnchorPoint = Vector2.new(1, 0)
         hexBox.Position = UDim2.new(1, -11, 0, 5)
-        hexBox.Size = UDim2.fromOffset(64, 28)
+        hexBox.Size = UDim2.fromOffset(66, 28)
         themed(hexBox, "BackgroundColor3", "background")
         themed(hexBox, "TextColor3", "accentBright")
         themed(hexBox, "PlaceholderColor3", "muted")
         hexBox.ClearTextOnFocus = false
         hexBox.Font = Enum.Font.GothamBold
         hexBox.TextSize = 9
-        hexBox.Text = selected
+        hexBox.Text = values[selectedToken]
         hexBox.Parent = row
         corner(hexBox, 7)
         stroke(hexBox, "border", 1, 0.16)
 
-        local palette = Instance.new("ScrollingFrame")
-        palette.Position = UDim2.fromOffset(13, 40)
-        palette.Size = UDim2.new(1, -26, 0, 32)
-        palette.BackgroundTransparency = 1
-        palette.BorderSizePixel = 0
-        palette.ScrollBarThickness = 2
-        themed(palette, "ScrollBarImageColor3", "accent")
-        palette.ScrollingDirection = Enum.ScrollingDirection.X
-        palette.CanvasSize = UDim2.fromOffset(#Theme.SWATCHES * 33, 0)
-        palette.Parent = row
+        local tokenList = Instance.new("ScrollingFrame")
+        tokenList.Position = UDim2.fromOffset(13, 39)
+        tokenList.Size = UDim2.new(1, -26, 0, 34)
+        tokenList.BackgroundTransparency = 1
+        tokenList.BorderSizePixel = 0
+        tokenList.ScrollBarThickness = 2
+        tokenList.ScrollingDirection = Enum.ScrollingDirection.X
+        tokenList.CanvasSize = UDim2.fromOffset(#Theme.KEYS * 105, 0)
+        themed(tokenList, "ScrollBarImageColor3", "accent")
+        tokenList.Parent = row
 
-        local list = Instance.new("UIListLayout")
-        list.FillDirection = Enum.FillDirection.Horizontal
-        list.Padding = UDim.new(0, 5)
-        list.SortOrder = Enum.SortOrder.LayoutOrder
-        list.Parent = palette
+        local tokenLayout = Instance.new("UIListLayout")
+        tokenLayout.FillDirection = Enum.FillDirection.Horizontal
+        tokenLayout.Padding = UDim.new(0, 5)
+        tokenLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        tokenLayout.Parent = tokenList
 
-        local swatchStrokes = {}
-        local function render(value, notify)
-            local normalized = Theme.normalizeHex(value)
-            if not normalized then
-                hexBox.Text = selected
-                return false
+        local spectrum = Instance.new("Frame")
+        spectrum.Name = "Spectrum"
+        spectrum.Position = UDim2.fromOffset(13, 82)
+        spectrum.Size = UDim2.new(1, -67, 0, 145)
+        spectrum.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+        spectrum.ClipsDescendants = false
+        spectrum.Parent = row
+        corner(spectrum, 8)
+
+        local whiteLayer = Instance.new("Frame")
+        whiteLayer.Size = UDim2.fromScale(1, 1)
+        whiteLayer.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        whiteLayer.BorderSizePixel = 0
+        whiteLayer.Parent = spectrum
+        corner(whiteLayer, 8)
+        local whiteGradient = Instance.new("UIGradient")
+        whiteGradient.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        whiteGradient.Parent = whiteLayer
+
+        local blackLayer = Instance.new("Frame")
+        blackLayer.Size = UDim2.fromScale(1, 1)
+        blackLayer.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+        blackLayer.BorderSizePixel = 0
+        blackLayer.Parent = spectrum
+        corner(blackLayer, 8)
+        local blackGradient = Instance.new("UIGradient")
+        blackGradient.Rotation = 90
+        blackGradient.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0),
+        })
+        blackGradient.Parent = blackLayer
+
+        local spectrumInput = Instance.new("TextButton")
+        spectrumInput.Size = UDim2.fromScale(1, 1)
+        spectrumInput.BackgroundTransparency = 1
+        spectrumInput.Text = ""
+        spectrumInput.AutoButtonColor = false
+        spectrumInput.ZIndex = 4
+        spectrumInput.Parent = spectrum
+
+        local spectrumCursor = Instance.new("Frame")
+        spectrumCursor.AnchorPoint = Vector2.new(0.5, 0.5)
+        spectrumCursor.Size = UDim2.fromOffset(14, 14)
+        spectrumCursor.BackgroundTransparency = 1
+        spectrumCursor.ZIndex = 5
+        spectrumCursor.Parent = spectrum
+        corner(spectrumCursor, 7)
+        local spectrumCursorStroke = Instance.new("UIStroke")
+        spectrumCursorStroke.Color = Color3.fromRGB(255, 255, 255)
+        spectrumCursorStroke.Thickness = 2
+        spectrumCursorStroke.Parent = spectrumCursor
+
+        local hueBar = Instance.new("Frame")
+        hueBar.Name = "Hue"
+        hueBar.AnchorPoint = Vector2.new(1, 0)
+        hueBar.Position = UDim2.new(1, -13, 0, 82)
+        hueBar.Size = UDim2.fromOffset(28, 145)
+        hueBar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        hueBar.ClipsDescendants = false
+        hueBar.Parent = row
+        corner(hueBar, 8)
+        local hueGradient = Instance.new("UIGradient")
+        hueGradient.Rotation = 90
+        hueGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 1, 1)),
+            ColorSequenceKeypoint.new(1 / 6, Color3.fromHSV(1 / 6, 1, 1)),
+            ColorSequenceKeypoint.new(2 / 6, Color3.fromHSV(2 / 6, 1, 1)),
+            ColorSequenceKeypoint.new(3 / 6, Color3.fromHSV(3 / 6, 1, 1)),
+            ColorSequenceKeypoint.new(4 / 6, Color3.fromHSV(4 / 6, 1, 1)),
+            ColorSequenceKeypoint.new(5 / 6, Color3.fromHSV(5 / 6, 1, 1)),
+            ColorSequenceKeypoint.new(1, Color3.fromHSV(1, 1, 1)),
+        })
+        hueGradient.Parent = hueBar
+
+        local hueInput = Instance.new("TextButton")
+        hueInput.Size = UDim2.fromScale(1, 1)
+        hueInput.BackgroundTransparency = 1
+        hueInput.Text = ""
+        hueInput.AutoButtonColor = false
+        hueInput.ZIndex = 4
+        hueInput.Parent = hueBar
+
+        local hueCursor = Instance.new("Frame")
+        hueCursor.AnchorPoint = Vector2.new(0.5, 0.5)
+        hueCursor.Position = UDim2.fromScale(0.5, hue)
+        hueCursor.Size = UDim2.new(1, 6, 0, 4)
+        hueCursor.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        hueCursor.ZIndex = 5
+        hueCursor.Parent = hueBar
+        corner(hueCursor, 3)
+        local hueCursorStroke = Instance.new("UIStroke")
+        hueCursorStroke.Color = Color3.fromRGB(20, 20, 20)
+        hueCursorStroke.Parent = hueCursor
+
+        local hint = label(row, "Arraste na paleta e na faixa lateral", 9)
+        hint.Position = UDim2.fromOffset(13, 238)
+        hint.Size = UDim2.new(1, -26, 0, 28)
+        themed(hint, "TextColor3", "muted")
+
+        local tokenButtons = {}
+        local function renderTokenButtons()
+            for token, button in pairs(tokenButtons) do
+                local active = token == selectedToken
+                themed(button, "BackgroundColor3", active and "accent" or "surface")
+                themed(button, "TextColor3", active and "text" or "muted")
+                button.BackgroundTransparency = active and 0 or 0.2
             end
-            selected = normalized
-            hexBox.Text = normalized
-            preview.BackgroundColor3 = Theme.toColor3(normalized)
-            for hex, outline in pairs(swatchStrokes) do
-                outline.Transparency = hex == normalized and 0 or 0.72
-            end
-            if notify then
-                callback(normalized)
-            end
-            return true
         end
 
-        for index, hex in ipairs(Theme.SWATCHES) do
-            local swatch = Instance.new("TextButton")
-            swatch.Name = "Swatch" .. tostring(index)
-            swatch.Size = UDim2.fromOffset(28, 28)
-            swatch.BackgroundColor3 = Theme.toColor3(hex)
-            swatch.Text = ""
-            swatch.AutoButtonColor = false
-            swatch.LayoutOrder = index
-            swatch.Parent = palette
-            corner(swatch, 7)
-            local outline = Instance.new("UIStroke")
-            outline.Color = Color3.fromRGB(255, 255, 255)
-            outline.Thickness = 2
-            outline.Transparency = 0.72
-            outline.Parent = swatch
-            swatchStrokes[hex] = outline
-            swatch.Activated:Connect(function()
-                render(hex, true)
+        local function renderColor(notify, commit)
+            local hex = Theme.hsvToHex(hue, saturation, brightness)
+            values[selectedToken] = hex
+            spectrum.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+            spectrumCursor.Position = UDim2.fromScale(saturation, 1 - brightness)
+            hueCursor.Position = UDim2.fromScale(0.5, hue)
+            preview.BackgroundColor3 = Theme.toColor3(hex)
+            hexBox.Text = hex
+            if notify then
+                callback(selectedToken, hex, commit == true)
+            end
+        end
+
+        local function selectToken(token)
+            if values[token] == nil then
+                return
+            end
+            selectedToken = token
+            hue, saturation, brightness = Theme.hexToHSV(values[token])
+            selectedLabel.Text = Theme.LABELS[token] or token
+            renderTokenButtons()
+            renderColor(false, false)
+        end
+
+        for index, token in ipairs(Theme.KEYS) do
+            local currentToken = token
+            local button = Instance.new("TextButton")
+            button.Name = "Token" .. tostring(index)
+            button.Size = UDim2.fromOffset(100, 29)
+            button.Text = Theme.LABELS[currentToken] or currentToken
+            button.TextSize = 9
+            button.TextTruncate = Enum.TextTruncate.AtEnd
+            button.Font = Enum.Font.GothamBold
+            button.AutoButtonColor = false
+            button.LayoutOrder = index
+            button.Parent = tokenList
+            corner(button, 7)
+            tokenButtons[currentToken] = button
+            button.Activated:Connect(function()
+                selectToken(currentToken)
             end)
         end
 
-        hexBox.FocusLost:Connect(function()
-            render(hexBox.Text, true)
-        end)
-        render(selected, false)
+        local dragging = nil
+        local dragInput = nil
+        local dragKind = nil
+        local scrollingParent = parent:IsA("ScrollingFrame") and parent or nil
+        local scrollingWasEnabled = nil
 
-        return row, {
-            setValue = function(_, value)
-                return render(value, false)
-            end,
-            getValue = function()
-                return selected
-            end,
-        }
+        local function updateSpectrum(position)
+            local size = spectrum.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then
+                return
+            end
+            saturation = math.clamp((position.X - spectrum.AbsolutePosition.X) / size.X, 0, 1)
+            brightness = 1 - math.clamp((position.Y - spectrum.AbsolutePosition.Y) / size.Y, 0, 1)
+            renderColor(true, false)
+        end
+
+        local function updateHue(position)
+            local height = hueBar.AbsoluteSize.Y
+            if height <= 0 then
+                return
+            end
+            hue = math.clamp((position.Y - hueBar.AbsolutePosition.Y) / height, 0, 1)
+            renderColor(true, false)
+        end
+
+        local function beginDrag(target, input)
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then
+                return
+            end
+            dragging = target
+            dragKind = input.UserInputType == Enum.UserInputType.Touch and "touch" or "mouse"
+            dragInput = dragKind == "touch" and input or nil
+            if scrollingParent then
+                scrollingWasEnabled = scrollingParent.ScrollingEnabled
+                scrollingParent.ScrollingEnabled = false
+            end
+            if target == "spectrum" then
+                updateSpectrum(input.Position)
+            else
+                updateHue(input.Position)
+            end
+        end
+
+        spectrumInput.InputBegan:Connect(function(input)
+            beginDrag("spectrum", input)
+        end)
+        hueInput.InputBegan:Connect(function(input)
+            beginDrag("hue", input)
+        end)
+
+        local changedConnection = UserInputService.InputChanged:Connect(function(input)
+            local mouseMove = dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseMovement
+            local touchMove = dragKind == "touch" and input == dragInput
+            if not dragging or (not mouseMove and not touchMove) then
+                return
+            end
+            if dragging == "spectrum" then
+                updateSpectrum(input.Position)
+            else
+                updateHue(input.Position)
+            end
+        end)
+
+        local endedConnection = UserInputService.InputEnded:Connect(function(input)
+            local mouseEnd = dragKind == "mouse"
+                and input.UserInputType == Enum.UserInputType.MouseButton1
+            local touchEnd = dragKind == "touch" and input == dragInput
+            if not dragging or (not mouseEnd and not touchEnd) then
+                return
+            end
+            dragging = nil
+            dragInput = nil
+            dragKind = nil
+            if scrollingParent and scrollingWasEnabled ~= nil then
+                scrollingParent.ScrollingEnabled = scrollingWasEnabled
+                scrollingWasEnabled = nil
+            end
+            callback(selectedToken, values[selectedToken], true)
+        end)
+
+        row.Destroying:Connect(function()
+            if scrollingParent and scrollingWasEnabled ~= nil then
+                scrollingParent.ScrollingEnabled = scrollingWasEnabled
+            end
+            changedConnection:Disconnect()
+            endedConnection:Disconnect()
+        end)
+
+        hexBox.FocusLost:Connect(function()
+            local normalized = Theme.normalizeHex(hexBox.Text)
+            if not normalized then
+                hexBox.Text = values[selectedToken]
+                return
+            end
+            values[selectedToken] = normalized
+            hue, saturation, brightness = Theme.hexToHSV(normalized)
+            renderColor(false, false)
+            callback(selectedToken, normalized, true)
+        end)
+
+        selectToken(selectedToken)
+        return row
     end
 
     function UI.numberInput(parent, text, initial, minimum, maximum, callback)
@@ -5483,12 +5715,6 @@ __factories["init"] = function()
         persistentCheckbox(visualPage, "Loot ESP — nome, valor e cor", "feature.lootESP", function(enabled)
             lootESP:setEnabled(enabled)
         end)
-        local lootESPNote = contentItem(UI.info(
-            visualPage,
-            "Mostra nome e valor de venda. A cor muda entre 1, 3, 5, 15, 40 e 200 moedas.",
-            42
-        ))
-        lootESPNote.TextColor3 = window.colors.muted
 
         contentItem(UI.section(miscPage, "DESBLOQUEIOS LOCAIS"))
         persistentCheckbox(miscPage, "Unlock All Gamepasses", "feature.unlockAllGamepasses", function(enabled)
@@ -5504,13 +5730,6 @@ __factories["init"] = function()
             attributeOverrides:setOverride("Gamepasses", "IncreasedKillerChange", enabled, "killerChance3x")
             attributeOverrides:setOverride("Settings", "killer_chance_3x", enabled, "killerChance3x")
         end)
-        local localOverrideNote = contentItem(UI.info(
-            miscPage,
-            "Overrides locais e restauraveis; validacoes feitas pelo servidor continuam dependendo do jogo.",
-            42
-        ))
-        localOverrideNote.TextColor3 = window.colors.muted
-
         contentItem(UI.section(miscPage, "PLAYER"))
         local savedWalkSpeed = stateStore:getNumber(
             "value.walkSpeed",
@@ -5631,30 +5850,24 @@ __factories["init"] = function()
                 fovOverride:setEnabled(enabled)
             end
         )
-        local playerNote = contentItem(UI.info(
-            miscPage,
-            "Valores locais e limitados. Ao desligar, o Hub restaura atributos, Humanoid e camera.",
-            42
-        ))
-        playerNote.TextColor3 = window.colors.muted
-
         if typeof(UI.segmented) == "function" and typeof(window.setWidthPercent) == "function" then
             contentItem(UI.section(settingsPage, "INTERFACE"))
-            local customColorRows = {}
+            local customControls = {}
+            local currentTheme = executorSettings:getTheme()
+            local customDraft = currentTheme.custom
             contentItem(UI.segmented(
                 settingsPage,
                 "Tema",
                 { "Dark", "Light", "Custom" },
                 savedTheme.name,
                 function(selected)
-                    local current = executorSettings:getTheme()
-                    if not window:setTheme(selected, current.custom) then
+                    if not window:setTheme(selected, customDraft) then
                         setStatus("Interface: tema invalido ignorado")
                         return
                     end
                     local saved = executorSettings:setTheme(selected)
-                    for _, row in ipairs(customColorRows) do
-                        row.Visible = selected == "Custom"
+                    for _, control in ipairs(customControls) do
+                        control.Visible = selected == "Custom"
                     end
                     if saved then
                         setStatus("Interface: tema " .. selected .. " salvo")
@@ -5689,35 +5902,24 @@ __factories["init"] = function()
                     end
                 end
             ))
-            local interfaceNote = contentItem(UI.info(
-                settingsPage,
-                "Tema, cores e largura sao salvos localmente em GOATHub/settings.json.",
-                38
-            ))
-            interfaceNote.TextColor3 = window.colors.muted
-
-            if typeof(UI.colorPicker) == "function" and typeof(window.setTheme) == "function" then
-                local currentTheme = executorSettings:getTheme()
+            if typeof(UI.themeEditor) == "function" and typeof(window.setTheme) == "function" then
                 local customSection = contentItem(UI.section(settingsPage, "PALETA CUSTOM"))
                 customSection.Visible = currentTheme.name == "Custom"
-                table.insert(customColorRows, customSection)
-                for _, key in ipairs(Theme.KEYS) do
-                    local token = key
-                    local row = UI.colorPicker(
-                        settingsPage,
-                        Theme.LABELS[token] or token,
-                        currentTheme.custom[token],
-                        function(hex)
+                table.insert(customControls, customSection)
+                local editor = contentItem(UI.themeEditor(
+                    settingsPage,
+                    customDraft,
+                    function(token, hex, commit)
+                        customDraft[token] = hex
+                        window:setTheme("Custom", customDraft)
+                        if commit then
                             executorSettings:setThemeColor(token, hex)
-                            local updated = executorSettings:getTheme()
-                            window:setTheme("Custom", updated.custom)
                             setStatus("Paleta Custom: " .. (Theme.LABELS[token] or token))
                         end
-                    )
-                    row.Visible = currentTheme.name == "Custom"
-                    contentItem(row)
-                    table.insert(customColorRows, row)
-                end
+                    end
+                ))
+                editor.Visible = currentTheme.name == "Custom"
+                table.insert(customControls, editor)
             end
         end
 
@@ -5762,13 +5964,6 @@ __factories["init"] = function()
             end,
             autoServerHop:shouldResume()
         )
-        local serverHopNote = contentItem(UI.info(
-            settingsPage,
-            "Ignora seu proprio nivel. Guarda os ultimos 10 JobIds e exige pelo menos outro jogador.",
-            34
-        ))
-        serverHopNote.TextColor3 = window.colors.muted
-
         function app:Destroy()
             if self.destroyed then
                 return
