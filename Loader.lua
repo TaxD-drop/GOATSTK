@@ -2,6 +2,7 @@
 -- qualquer feature, UI ou acesso a objetos do jogo.
 
 local BUNDLE_URL = "https://raw.githubusercontent.com/TaxD-drop/GOATSTK/refs/heads/main/Distribution/GOATHubSTK.bundle.lua"
+local MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 
 if BUNDLE_URL:find("COLOQUE_AQUI", 1, true) then
     warn("[GOATHubSTK] Configure BUNDLE_URL em Loader.lua ou execute o bundle local.")
@@ -16,6 +17,10 @@ local ok, source = pcall(function()
 end)
 if not ok then
     warn("[GOATHubSTK] Falha ao baixar o bundle: " .. tostring(source))
+    return
+end
+if typeof(source) ~= "string" or #source == 0 or #source > MAX_BUNDLE_BYTES then
+    warn("[GOATHubSTK] Bundle vazio ou acima do limite permitido.")
     return
 end
 
