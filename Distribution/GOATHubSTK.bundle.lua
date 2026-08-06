@@ -42,6 +42,7 @@ local __config = (function()
             NARROW_BREAKPOINT = 620,
             MIN_WIDTH = 300,
             DEFAULT_WIDTH_PERCENT = 50,
+            DEFAULT_THEME = "Dark",
             HEADER_HEIGHT = 54,
             COMPACT_HEADER_HEIGHT = 48,
             TAB_HEIGHT = 44,
@@ -161,13 +162,14 @@ __factories["Core/ExecutorSettings"] = function()
     local HttpService = game:GetService("HttpService")
 
     local Config = __require("Config")
+    local Theme = __require("Core/Theme")
 
     local ExecutorSettings = {}
     ExecutorSettings.__index = ExecutorSettings
 
     local DIRECTORY = "GOATHub"
     local FILE_PATH = DIRECTORY .. "/settings.json"
-    local FILE_VERSION = 2
+    local FILE_VERSION = 3
     local MAX_FILE_BYTES = 4096
     local ICON_CACHE_PATH = "GOATHub/UI/Ico/logo.png"
     local WIDTH_PERCENTAGES = {
@@ -204,6 +206,8 @@ __factories["Core/ExecutorSettings"] = function()
         local self = setmetatable({
             widthPercent = defaultWidth,
             iconUrl = configuredIconUrl(),
+            themeName = Theme.normalizeName(Config.MODERN_UI.DEFAULT_THEME),
+            customTheme = Theme.defaultCustom(),
             migrationNeeded = false,
             persistent = typeof(writefile) == "function" and typeof(makefolder) == "function",
             loaded = false,
@@ -242,17 +246,33 @@ __factories["Core/ExecutorSettings"] = function()
         end)
         if not decodedOk
             or typeof(decoded) ~= "table"
-            or (decoded.version ~= 1 and decoded.version ~= FILE_VERSION)
+            or (decoded.version ~= 1 and decoded.version ~= 2 and decoded.version ~= FILE_VERSION)
             or typeof(decoded.ui) ~= "table"
             or not validWidthPercent(decoded.ui.widthPercent)
         then
             return false
         end
         self.widthPercent = decoded.ui.widthPercent
+        local validStoredTheme = false
+        if decoded.version == FILE_VERSION and typeof(decoded.theme) == "table" then
+            self.themeName = Theme.normalizeName(decoded.theme.name)
+            self.customTheme = Theme.normalizeCustom(decoded.theme.custom)
+            validStoredTheme = decoded.theme.name == self.themeName
+                and typeof(decoded.theme.custom) == "table"
+            if validStoredTheme then
+                for _, key in ipairs(Theme.KEYS) do
+                    if decoded.theme.custom[key] ~= self.customTheme[key] then
+                        validStoredTheme = false
+                        break
+                    end
+                end
+            end
+        end
         if decoded.version == FILE_VERSION
             and typeof(decoded.icon) == "table"
             and decoded.icon.url == self.iconUrl
-            and decoded.icon.cachePath == ICON_CACHE_PATH then
+            and decoded.icon.cachePath == ICON_CACHE_PATH
+            and validStoredTheme then
             self.migrationNeeded = false
         else
             self.migrationNeeded = true
@@ -273,6 +293,10 @@ __factories["Core/ExecutorSettings"] = function()
                 icon = {
                     url = self.iconUrl,
                     cachePath = ICON_CACHE_PATH,
+                },
+                theme = {
+                    name = self.themeName,
+                    custom = self.customTheme,
                 },
             })
         end)
@@ -299,6 +323,37 @@ __factories["Core/ExecutorSettings"] = function()
             return false
         end
         self.widthPercent = value
+        return self:_save()
+    end
+
+    function ExecutorSettings:getTheme()
+        return {
+            name = self.themeName,
+            custom = Theme.normalizeCustom(self.customTheme),
+        }
+    end
+
+    function ExecutorSettings:setTheme(name)
+        if Theme.normalizeName(name) ~= name then
+            return false
+        end
+        self.themeName = name
+        return self:_save()
+    end
+
+    function ExecutorSettings:setThemeColor(key, value)
+        local known = false
+        for _, candidate in ipairs(Theme.KEYS) do
+            if candidate == key then
+                known = true
+                break
+            end
+        end
+        local normalized = Theme.normalizeHex(value)
+        if not known or not normalized then
+            return false
+        end
+        self.customTheme[key] = normalized
         return self:_save()
     end
 
@@ -908,6 +963,170 @@ __factories["Core/StateStore"] = function()
     end
 
     return StateStore
+end
+
+__factories["Core/Theme"] = function()
+    local Theme = {}
+
+    Theme.DEFAULT_NAME = "Dark"
+    Theme.KEYS = table.freeze({
+        "background",
+        "panel",
+        "header",
+        "surface",
+        "card",
+        "cardHover",
+        "text",
+        "muted",
+        "accent",
+        "accentBright",
+        "green",
+        "red",
+        "border",
+        "track",
+    })
+
+    Theme.LABELS = table.freeze({
+        background = "Fundo e barra de status",
+        panel = "Painel principal",
+        header = "Barra superior",
+        surface = "Navegacao e superficies",
+        card = "Cards",
+        cardHover = "Cards ao tocar/passar",
+        text = "Texto principal",
+        muted = "Texto secundario",
+        accent = "Destaque",
+        accentBright = "Destaque claro",
+        green = "Sucesso",
+        red = "Perigo",
+        border = "Bordas",
+        track = "Trilhos e controles",
+    })
+
+    Theme.SWATCHES = table.freeze({
+        "#070A12", "#0B101D", "#172033", "#FFFFFF",
+        "#66738C", "#8B99B4", "#4F6BED", "#66D0FF",
+        "#071306", "#0C2109", "#163710", "#245F15",
+        "#51C925", "#8BEA5D", "#53E39A", "#F45B69",
+        "#FFB84D", "#A855F7",
+    })
+
+    local PRESETS = {
+        Dark = {
+            background = "#070A12",
+            panel = "#0B101D",
+            header = "#0E1423",
+            surface = "#11182A",
+            card = "#161F34",
+            cardHover = "#1C2741",
+            text = "#F2F6FF",
+            muted = "#8B99B4",
+            accent = "#5C7CFA",
+            accentBright = "#66D0FF",
+            green = "#3ED38F",
+            red = "#F45B69",
+            border = "#2B3955",
+            track = "#323D53",
+        },
+        Light = {
+            background = "#E9EEF6",
+            panel = "#F7F9FC",
+            header = "#FFFFFF",
+            surface = "#E7EDF7",
+            card = "#FFFFFF",
+            cardHover = "#DDE6F3",
+            text = "#172033",
+            muted = "#66738C",
+            accent = "#4F6BED",
+            accentBright = "#2997D6",
+            green = "#249B68",
+            red = "#D94354",
+            border = "#C4D0E1",
+            track = "#C9D3E2",
+        },
+        Custom = {
+            background = "#071306",
+            panel = "#0C2109",
+            header = "#0B190A",
+            surface = "#163710",
+            card = "#245F15",
+            cardHover = "#2F7A1C",
+            text = "#F4FFF1",
+            muted = "#A8C79F",
+            accent = "#51C925",
+            accentBright = "#8BEA5D",
+            green = "#53E39A",
+            red = "#FF6574",
+            border = "#3F7432",
+            track = "#325528",
+        },
+    }
+
+    function Theme.normalizeName(value)
+        if value == "Dark" or value == "Light" or value == "Custom" then
+            return value
+        end
+        return Theme.DEFAULT_NAME
+    end
+
+    function Theme.normalizeHex(value)
+        if typeof(value) ~= "string" then
+            return nil
+        end
+        local normalized = string.upper(value)
+        if normalized:match("^#%x%x%x%x%x%x$") then
+            return normalized
+        end
+        return nil
+    end
+
+    local function copyPalette(source)
+        local copy = {}
+        for _, key in ipairs(Theme.KEYS) do
+            copy[key] = source[key]
+        end
+        return copy
+    end
+
+    function Theme.defaultCustom()
+        return copyPalette(PRESETS.Custom)
+    end
+
+    function Theme.normalizeCustom(source)
+        source = typeof(source) == "table" and source or {}
+        local result = Theme.defaultCustom()
+        for _, key in ipairs(Theme.KEYS) do
+            result[key] = Theme.normalizeHex(source[key]) or result[key]
+        end
+        return result
+    end
+
+    function Theme.resolveHex(name, custom)
+        name = Theme.normalizeName(name)
+        if name == "Custom" then
+            return Theme.normalizeCustom(custom)
+        end
+        return copyPalette(PRESETS[name])
+    end
+
+    function Theme.toColor3(hex)
+        local normalized = Theme.normalizeHex(hex) or "#000000"
+        return Color3.fromRGB(
+            tonumber(normalized:sub(2, 3), 16),
+            tonumber(normalized:sub(4, 5), 16),
+            tonumber(normalized:sub(6, 7), 16)
+        )
+    end
+
+    function Theme.resolveColors(name, custom)
+        local colors = {}
+        for key, hex in pairs(Theme.resolveHex(name, custom)) do
+            colors[key] = Theme.toColor3(hex)
+        end
+        return colors
+    end
+
+    return Theme
 end
 
 __factories["Features/AttributeOverrides"] = function()
@@ -3597,29 +3816,49 @@ __factories["UI/ModernUI"] = function()
 
     local Config = __require("Config")
     local IconCache = __require("Core/IconCache")
+    local Theme = __require("Core/Theme")
     local Layout = __require("UI/Layout")
 
     local UI = {}
 
-    local COLORS = table.freeze({
-        background = Color3.fromRGB(7, 10, 18),
-        panel = Color3.fromRGB(160, 224, 31),
-        header = Color3.fromRGB(116, 207, 83),
-        surface = Color3.fromRGB(116, 207, 83),
-        card = Color3.fromRGB(80, 173, 26),
-        cardHover = Color3.fromRGB(28, 39, 65),
-        text = Color3.fromRGB(255, 255, 255),
-        muted = Color3.fromRGB(139, 153, 180),
-        accent = Color3.fromRGB(92, 124, 250),
-        accentBright = Color3.fromRGB(102, 208, 255),
-        green = Color3.fromRGB(62, 211, 143),
-        red = Color3.fromRGB(244, 91, 105),
-        border = Color3.fromRGB(43, 57, 85),
-        track = Color3.fromRGB(50, 61, 83),
-    })
+    local COLORS = Theme.resolveColors(Theme.DEFAULT_NAME)
 
     local TABS = table.freeze({ "Main", "Visual", "Misc", "Settings" })
     local TWEEN_INFO = TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+    local THEME_ATTRIBUTE = "GOATHubTheme_"
+    local THEME_PROPERTIES = table.freeze({
+        "BackgroundColor3",
+        "TextColor3",
+        "PlaceholderColor3",
+        "ScrollBarImageColor3",
+        "Color",
+    })
+
+    local function themed(instance, property, token)
+        instance:SetAttribute(THEME_ATTRIBUTE .. property, token)
+        instance[property] = COLORS[token]
+    end
+
+    local function applyThemeBindings(root)
+        local instances = root:GetDescendants()
+        table.insert(instances, root)
+        for _, instance in ipairs(instances) do
+            if instance:IsA("UIGradient") then
+                local first = instance:GetAttribute(THEME_ATTRIBUTE .. "GradientFirst")
+                local second = instance:GetAttribute(THEME_ATTRIBUTE .. "GradientSecond")
+                if COLORS[first] and COLORS[second] then
+                    instance.Color = ColorSequence.new(COLORS[first], COLORS[second])
+                end
+            else
+                for _, property in ipairs(THEME_PROPERTIES) do
+                    local token = instance:GetAttribute(THEME_ATTRIBUTE .. property)
+                    if COLORS[token] then
+                        instance[property] = COLORS[token]
+                    end
+                end
+            end
+        end
+    end
 
     local function corner(parent, radius)
         local value = Instance.new("UICorner")
@@ -3628,9 +3867,9 @@ __factories["UI/ModernUI"] = function()
         return value
     end
 
-    local function stroke(parent, color, thickness, transparency)
+    local function stroke(parent, token, thickness, transparency)
         local value = Instance.new("UIStroke")
-        value.Color = color
+        themed(value, "Color", token)
         value.Thickness = thickness or 1
         value.Transparency = transparency or 0
         value.Parent = parent
@@ -3639,7 +3878,9 @@ __factories["UI/ModernUI"] = function()
 
     local function gradient(parent, first, second, rotation)
         local value = Instance.new("UIGradient")
-        value.Color = ColorSequence.new(first, second)
+        value:SetAttribute(THEME_ATTRIBUTE .. "GradientFirst", first)
+        value:SetAttribute(THEME_ATTRIBUTE .. "GradientSecond", second)
+        value.Color = ColorSequence.new(COLORS[first], COLORS[second])
         value.Rotation = rotation or 0
         value.Parent = parent
         return value
@@ -3649,11 +3890,16 @@ __factories["UI/ModernUI"] = function()
         TweenService:Create(instance, TWEEN_INFO, properties):Play()
     end
 
+    local function animateThemed(instance, property, token)
+        instance:SetAttribute(THEME_ATTRIBUTE .. property, token)
+        animate(instance, { [property] = COLORS[token] })
+    end
+
     local function label(parent, text, size)
         local value = Instance.new("TextLabel")
         value.BackgroundTransparency = 1
         value.Text = text
-        value.TextColor3 = COLORS.text
+        themed(value, "TextColor3", "text")
         value.Font = Enum.Font.GothamMedium
         value.TextSize = size or 13
         value.TextXAlignment = Enum.TextXAlignment.Left
@@ -3677,6 +3923,12 @@ __factories["UI/ModernUI"] = function()
 
     function UI.new(title, options)
         options = typeof(options) == "table" and options or {}
+        local initialTheme = typeof(options.theme) == "table" and options.theme or {}
+        local themeName = Theme.normalizeName(initialTheme.name or Config.MODERN_UI.DEFAULT_THEME)
+        local customTheme = Theme.normalizeCustom(initialTheme.custom)
+        for key, color in pairs(Theme.resolveColors(themeName, customTheme)) do
+            COLORS[key] = color
+        end
         local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
         local previous = playerGui:FindFirstChild("GOATHubSTK")
         if previous then
@@ -3699,6 +3951,8 @@ __factories["UI/ModernUI"] = function()
             pages = {},
             tabs = {},
             activePage = "Main",
+            themeName = themeName,
+            customTheme = customTheme,
             widthPercent = Layout.normalizeWidthPercent(
                 options.widthPercent,
                 Config.MODERN_UI.DEFAULT_WIDTH_PERCENT
@@ -3719,17 +3973,18 @@ __factories["UI/ModernUI"] = function()
         local frame = Instance.new("Frame")
         frame.Name = "ModernWindow"
         frame.AnchorPoint = Vector2.new(0.5, 0.5)
-        frame.BackgroundColor3 = COLORS.panel
+        themed(frame, "BackgroundColor3", "panel")
         frame.ClipsDescendants = true
         frame.Parent = gui
         corner(frame, 14)
-        stroke(frame, COLORS.border, 1, 0.08)
-        gradient(frame, Color3.fromRGB(13, 19, 34), COLORS.panel, 90)
+        stroke(frame, "border", 1, 0.08)
+        gradient(frame, "background", "panel", 90)
         self.frame = frame
 
         local topBar = Instance.new("Frame")
         topBar.Name = "TopBar"
-        topBar.BackgroundTransparency = 1
+        topBar.BackgroundTransparency = 0
+        themed(topBar, "BackgroundColor3", "header")
         topBar.BorderSizePixel = 0
         topBar.Parent = frame
         self.topBar = topBar
@@ -3749,10 +4004,10 @@ __factories["UI/ModernUI"] = function()
         brand.AnchorPoint = Vector2.new(0, 0.5)
         brand.Position = UDim2.new(0, 12, 0.5, 0)
         brand.Size = UDim2.fromOffset(32, 32)
-        brand.BackgroundColor3 = COLORS.accent
+        themed(brand, "BackgroundColor3", "accent")
         brand.Parent = topBar
         corner(brand, 9)
-        gradient(brand, COLORS.accent, COLORS.accentBright, 35)
+        gradient(brand, "accent", "accentBright", 35)
 
         local brandIcon = Instance.new("ImageLabel")
         brandIcon.Name = "Icon"
@@ -3797,22 +4052,22 @@ __factories["UI/ModernUI"] = function()
         subtitle.Name = "Subtitle"
         subtitle.Position = UDim2.fromOffset(54, 27)
         subtitle.Size = UDim2.new(1, -150, 0, 15)
-        subtitle.TextColor3 = COLORS.muted
+        themed(subtitle, "TextColor3", "muted")
 
         local minimizeButton = Instance.new("TextButton")
         minimizeButton.Name = "Minimize"
         minimizeButton.AnchorPoint = Vector2.new(1, 0.5)
         minimizeButton.Position = UDim2.new(1, -48, 0.5, 0)
         minimizeButton.Size = UDim2.fromOffset(34, 30)
-        minimizeButton.BackgroundColor3 = COLORS.surface
+        themed(minimizeButton, "BackgroundColor3", "surface")
         minimizeButton.Text = "–"
-        minimizeButton.TextColor3 = COLORS.muted
+        themed(minimizeButton, "TextColor3", "muted")
         minimizeButton.Font = Enum.Font.GothamBold
         minimizeButton.TextSize = 19
         minimizeButton.ZIndex = 3
         minimizeButton.Parent = topBar
         corner(minimizeButton, 9)
-        stroke(minimizeButton, COLORS.border, 1, 0.2)
+        stroke(minimizeButton, "border", 1, 0.2)
         self.minimizeButton = minimizeButton
 
         local closeButton = Instance.new("TextButton")
@@ -3820,20 +4075,20 @@ __factories["UI/ModernUI"] = function()
         closeButton.AnchorPoint = Vector2.new(1, 0.5)
         closeButton.Position = UDim2.new(1, -10, 0.5, 0)
         closeButton.Size = UDim2.fromOffset(34, 30)
-        closeButton.BackgroundColor3 = COLORS.surface
+        themed(closeButton, "BackgroundColor3", "surface")
         closeButton.Text = "×"
-        closeButton.TextColor3 = COLORS.red
+        themed(closeButton, "TextColor3", "red")
         closeButton.Font = Enum.Font.GothamBold
         closeButton.TextSize = 19
         closeButton.ZIndex = 3
         closeButton.Parent = topBar
         corner(closeButton, 9)
-        stroke(closeButton, COLORS.border, 1, 0.2)
+        stroke(closeButton, "border", 1, 0.2)
         self.closeButton = closeButton
 
         local tabBar = Instance.new("Frame")
         tabBar.Name = "Navigation"
-        tabBar.BackgroundColor3 = COLORS.surface
+        themed(tabBar, "BackgroundColor3", "surface")
         tabBar.BorderSizePixel = 0
         tabBar.Parent = frame
         self.tabBar = tabBar
@@ -3862,10 +4117,10 @@ __factories["UI/ModernUI"] = function()
             local button = Instance.new("TextButton")
             button.Name = pageName
             button.Size = UDim2.new(0.25, -3, 1, 0)
-            button.BackgroundColor3 = COLORS.card
+            themed(button, "BackgroundColor3", "card")
             button.BackgroundTransparency = 1
             button.Text = pageName
-            button.TextColor3 = COLORS.muted
+            themed(button, "TextColor3", "muted")
             button.Font = Enum.Font.GothamBold
             button.TextSize = 12
             button.AutoButtonColor = false
@@ -3878,7 +4133,7 @@ __factories["UI/ModernUI"] = function()
             indicator.AnchorPoint = Vector2.new(0.5, 1)
             indicator.Position = UDim2.new(0.5, 0, 1, 0)
             indicator.Size = UDim2.new(0.42, 0, 0, 2)
-            indicator.BackgroundColor3 = COLORS.accentBright
+            themed(indicator, "BackgroundColor3", "accentBright")
             indicator.BorderSizePixel = 0
             indicator.Visible = false
             indicator.Parent = button
@@ -3893,7 +4148,7 @@ __factories["UI/ModernUI"] = function()
             page.AutomaticCanvasSize = Enum.AutomaticSize.Y
             page.ScrollingDirection = Enum.ScrollingDirection.Y
             page.ScrollBarThickness = 3
-            page.ScrollBarImageColor3 = COLORS.accent
+            themed(page, "ScrollBarImageColor3", "accent")
             page.Visible = false
             page.Parent = pageHost
             addPageLayout(page)
@@ -3911,7 +4166,7 @@ __factories["UI/ModernUI"] = function()
 
         local statusBar = Instance.new("Frame")
         statusBar.Name = "StatusBar"
-        statusBar.BackgroundColor3 = COLORS.background
+        themed(statusBar, "BackgroundColor3", "background")
         statusBar.BorderSizePixel = 0
         statusBar.Parent = frame
         self.statusBar = statusBar
@@ -3920,7 +4175,7 @@ __factories["UI/ModernUI"] = function()
         statusDot.AnchorPoint = Vector2.new(0, 0.5)
         statusDot.Position = UDim2.new(0, 14, 0.5, 0)
         statusDot.Size = UDim2.fromOffset(7, 7)
-        statusDot.BackgroundColor3 = COLORS.green
+        themed(statusDot, "BackgroundColor3", "green")
         statusDot.BorderSizePixel = 0
         statusDot.Parent = statusBar
         corner(statusDot, 7)
@@ -3929,7 +4184,7 @@ __factories["UI/ModernUI"] = function()
         statusLabel.Name = "Status"
         statusLabel.Position = UDim2.fromOffset(29, 0)
         statusLabel.Size = UDim2.new(1, -42, 1, 0)
-        statusLabel.TextColor3 = COLORS.muted
+        themed(statusLabel, "TextColor3", "muted")
         statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
         self.statusLabel = statusLabel
 
@@ -3948,9 +4203,9 @@ __factories["UI/ModernUI"] = function()
                 page.Visible = selected and not self.collapsed
                 local tab = self.tabs[name]
                 tab.indicator.Visible = selected
+                themed(tab.button, "TextColor3", selected and "text" or "muted")
                 animate(tab.button, {
                     BackgroundTransparency = selected and 0 or 1,
-                    TextColor3 = selected and COLORS.text or COLORS.muted,
                 })
             end
         end
@@ -3959,6 +4214,27 @@ __factories["UI/ModernUI"] = function()
             if not self.destroyed and self.statusLabel and self.statusLabel.Parent then
                 self.statusLabel.Text = tostring(message)
             end
+        end
+
+        function self:setTheme(name, custom)
+            if self.destroyed or Theme.normalizeName(name) ~= name then
+                return false
+            end
+            self.themeName = name
+            self.customTheme = Theme.normalizeCustom(custom or self.customTheme)
+            for key, color in pairs(Theme.resolveColors(name, self.customTheme)) do
+                COLORS[key] = color
+            end
+            applyThemeBindings(self.gui)
+            self:selectPage(self.activePage)
+            return true
+        end
+
+        function self:getTheme()
+            return {
+                name = self.themeName,
+                custom = Theme.normalizeCustom(self.customTheme),
+            }
         end
 
         function self:setWidthPercent(value)
@@ -4170,14 +4446,14 @@ __factories["UI/ModernUI"] = function()
 
         local title = label(section, string.upper(text), 10)
         title.Size = UDim2.new(0.46, 0, 1, 0)
-        title.TextColor3 = COLORS.muted
+        themed(title, "TextColor3", "muted")
         title.Font = Enum.Font.GothamBold
 
         local line = Instance.new("Frame")
         line.AnchorPoint = Vector2.new(1, 0.5)
         line.Position = UDim2.new(1, 0, 0.5, 0)
         line.Size = UDim2.new(0.52, 0, 0, 1)
-        line.BackgroundColor3 = COLORS.border
+        themed(line, "BackgroundColor3", "border")
         line.BackgroundTransparency = 0.25
         line.BorderSizePixel = 0
         line.Parent = section
@@ -4187,14 +4463,14 @@ __factories["UI/ModernUI"] = function()
     function UI.info(parent, text, height)
         local value = label(parent, text, 11)
         value.Size = UDim2.new(1, 0, 0, height or 42)
-        value.BackgroundColor3 = COLORS.surface
+        themed(value, "BackgroundColor3", "surface")
         value.BackgroundTransparency = 0.12
-        value.TextColor3 = COLORS.muted
+        themed(value, "TextColor3", "muted")
         value.TextWrapped = true
         value.TextYAlignment = Enum.TextYAlignment.Center
         value.Parent = parent
         corner(value, 9)
-        stroke(value, COLORS.border, 1, 0.3)
+        stroke(value, "border", 1, 0.3)
 
         local padding = Instance.new("UIPadding")
         padding.PaddingLeft = UDim.new(0, 12)
@@ -4206,21 +4482,29 @@ __factories["UI/ModernUI"] = function()
     function UI.button(parent, text, color, height)
         local button = Instance.new("TextButton")
         button.Size = UDim2.new(1, 0, 0, height or 42)
-        button.BackgroundColor3 = color or COLORS.card
+        if color then
+            button.BackgroundColor3 = color
+        else
+            themed(button, "BackgroundColor3", "card")
+        end
         button.AutoButtonColor = false
         button.Text = text
-        button.TextColor3 = COLORS.text
+        themed(button, "TextColor3", "text")
         button.Font = Enum.Font.GothamBold
         button.TextSize = 12
         button.Parent = parent
         corner(button, 10)
-        stroke(button, COLORS.border, 1, 0.2)
+        stroke(button, "border", 1, 0.2)
 
         button.MouseEnter:Connect(function()
-            animate(button, { BackgroundColor3 = COLORS.cardHover })
+            if not color then
+                animateThemed(button, "BackgroundColor3", "cardHover")
+            end
         end)
         button.MouseLeave:Connect(function()
-            animate(button, { BackgroundColor3 = color or COLORS.card })
+            if not color then
+                animateThemed(button, "BackgroundColor3", "card")
+            end
         end)
         return button
     end
@@ -4228,53 +4512,53 @@ __factories["UI/ModernUI"] = function()
     function UI.checkbox(parent, text, initial, callback)
         local row = Instance.new("TextButton")
         row.Size = UDim2.new(1, 0, 0, 46)
-        row.BackgroundColor3 = COLORS.card
+        themed(row, "BackgroundColor3", "card")
         row.AutoButtonColor = false
         row.Text = ""
         row.Parent = parent
         corner(row, 10)
-        stroke(row, COLORS.border, 1, 0.22)
+        stroke(row, "border", 1, 0.22)
 
         local title = label(row, text, 12)
         title.Position = UDim2.fromOffset(13, 0)
         title.Size = UDim2.new(1, -82, 1, 0)
-        title.TextColor3 = COLORS.text
+        themed(title, "TextColor3", "text")
         title.Font = Enum.Font.GothamMedium
 
         local track = Instance.new("Frame")
         track.AnchorPoint = Vector2.new(1, 0.5)
         track.Position = UDim2.new(1, -12, 0.5, 0)
         track.Size = UDim2.fromOffset(42, 23)
-        track.BackgroundColor3 = COLORS.track
+        themed(track, "BackgroundColor3", "track")
         track.Parent = row
         corner(track, 12)
 
         local knob = Instance.new("Frame")
         knob.AnchorPoint = Vector2.new(0, 0.5)
         knob.Size = UDim2.fromOffset(17, 17)
-        knob.BackgroundColor3 = COLORS.text
+        themed(knob, "BackgroundColor3", "text")
         knob.Parent = track
         corner(knob, 9)
 
         local checked = initial == true
         local function render(animated)
-            local trackColor = checked and COLORS.accent or COLORS.track
+            local trackToken = checked and "accent" or "track"
             local knobPosition = UDim2.new(0, checked and 22 or 3, 0.5, 0)
             if animated then
-                animate(track, { BackgroundColor3 = trackColor })
+                animateThemed(track, "BackgroundColor3", trackToken)
                 animate(knob, { Position = knobPosition })
             else
-                track.BackgroundColor3 = trackColor
+                themed(track, "BackgroundColor3", trackToken)
                 knob.Position = knobPosition
             end
         end
         render(false)
 
         row.MouseEnter:Connect(function()
-            animate(row, { BackgroundColor3 = COLORS.cardHover })
+            animateThemed(row, "BackgroundColor3", "cardHover")
         end)
         row.MouseLeave:Connect(function()
-            animate(row, { BackgroundColor3 = COLORS.card })
+            animateThemed(row, "BackgroundColor3", "card")
         end)
         row.Activated:Connect(function()
             checked = not checked
@@ -4287,23 +4571,23 @@ __factories["UI/ModernUI"] = function()
     function UI.segmented(parent, text, options, initial, callback)
         local row = Instance.new("Frame")
         row.Size = UDim2.new(1, 0, 0, 78)
-        row.BackgroundColor3 = COLORS.card
+        themed(row, "BackgroundColor3", "card")
         row.Parent = parent
         corner(row, 10)
-        stroke(row, COLORS.border, 1, 0.22)
+        stroke(row, "border", 1, 0.22)
 
         local title = label(row, text, 11)
         title.Position = UDim2.fromOffset(13, 5)
         title.Size = UDim2.new(1, -26, 0, 24)
-        title.TextColor3 = COLORS.text
+        themed(title, "TextColor3", "text")
 
         local selector = Instance.new("Frame")
         selector.Position = UDim2.fromOffset(13, 35)
         selector.Size = UDim2.new(1, -26, 0, 31)
-        selector.BackgroundColor3 = COLORS.background
+        themed(selector, "BackgroundColor3", "background")
         selector.Parent = row
         corner(selector, 8)
-        stroke(selector, COLORS.border, 1, 0.18)
+        stroke(selector, "border", 1, 0.18)
 
         local list = Instance.new("UIListLayout")
         list.FillDirection = Enum.FillDirection.Horizontal
@@ -4325,9 +4609,11 @@ __factories["UI/ModernUI"] = function()
         local function render(animated)
             for value, button in pairs(buttons) do
                 local active = value == selected
+                local textToken = active and "text" or "muted"
+                button:SetAttribute(THEME_ATTRIBUTE .. "TextColor3", textToken)
                 local properties = {
                     BackgroundTransparency = active and 0.05 or 1,
-                    TextColor3 = active and COLORS.text or COLORS.muted,
+                    TextColor3 = COLORS[textToken],
                 }
                 if animated then
                     animate(button, properties)
@@ -4342,10 +4628,10 @@ __factories["UI/ModernUI"] = function()
             local button = Instance.new("TextButton")
             button.Name = "Option" .. tostring(index)
             button.Size = UDim2.new(1 / #values, offset, 1, 0)
-            button.BackgroundColor3 = COLORS.accent
+            themed(button, "BackgroundColor3", "accent")
             button.BackgroundTransparency = 1
             button.Text = value
-            button.TextColor3 = COLORS.muted
+            themed(button, "TextColor3", "muted")
             button.Font = Enum.Font.GothamBold
             button.TextSize = 11
             button.AutoButtonColor = false
@@ -4366,33 +4652,143 @@ __factories["UI/ModernUI"] = function()
         return row
     end
 
+    function UI.colorPicker(parent, text, initial, callback)
+        local selected = Theme.normalizeHex(initial) or "#000000"
+
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, 0, 0, 84)
+        themed(row, "BackgroundColor3", "card")
+        row.Parent = parent
+        corner(row, 10)
+        stroke(row, "border", 1, 0.22)
+
+        local title = label(row, text, 10)
+        title.Position = UDim2.fromOffset(13, 4)
+        title.Size = UDim2.new(1, -132, 0, 25)
+        themed(title, "TextColor3", "text")
+
+        local preview = Instance.new("Frame")
+        preview.AnchorPoint = Vector2.new(1, 0)
+        preview.Position = UDim2.new(1, -82, 0, 8)
+        preview.Size = UDim2.fromOffset(22, 22)
+        preview.BackgroundColor3 = Theme.toColor3(selected)
+        preview.Parent = row
+        corner(preview, 6)
+
+        local hexBox = Instance.new("TextBox")
+        hexBox.AnchorPoint = Vector2.new(1, 0)
+        hexBox.Position = UDim2.new(1, -11, 0, 5)
+        hexBox.Size = UDim2.fromOffset(64, 28)
+        themed(hexBox, "BackgroundColor3", "background")
+        themed(hexBox, "TextColor3", "accentBright")
+        themed(hexBox, "PlaceholderColor3", "muted")
+        hexBox.ClearTextOnFocus = false
+        hexBox.Font = Enum.Font.GothamBold
+        hexBox.TextSize = 9
+        hexBox.Text = selected
+        hexBox.Parent = row
+        corner(hexBox, 7)
+        stroke(hexBox, "border", 1, 0.16)
+
+        local palette = Instance.new("ScrollingFrame")
+        palette.Position = UDim2.fromOffset(13, 40)
+        palette.Size = UDim2.new(1, -26, 0, 32)
+        palette.BackgroundTransparency = 1
+        palette.BorderSizePixel = 0
+        palette.ScrollBarThickness = 2
+        themed(palette, "ScrollBarImageColor3", "accent")
+        palette.ScrollingDirection = Enum.ScrollingDirection.X
+        palette.CanvasSize = UDim2.fromOffset(#Theme.SWATCHES * 33, 0)
+        palette.Parent = row
+
+        local list = Instance.new("UIListLayout")
+        list.FillDirection = Enum.FillDirection.Horizontal
+        list.Padding = UDim.new(0, 5)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
+        list.Parent = palette
+
+        local swatchStrokes = {}
+        local function render(value, notify)
+            local normalized = Theme.normalizeHex(value)
+            if not normalized then
+                hexBox.Text = selected
+                return false
+            end
+            selected = normalized
+            hexBox.Text = normalized
+            preview.BackgroundColor3 = Theme.toColor3(normalized)
+            for hex, outline in pairs(swatchStrokes) do
+                outline.Transparency = hex == normalized and 0 or 0.72
+            end
+            if notify then
+                callback(normalized)
+            end
+            return true
+        end
+
+        for index, hex in ipairs(Theme.SWATCHES) do
+            local swatch = Instance.new("TextButton")
+            swatch.Name = "Swatch" .. tostring(index)
+            swatch.Size = UDim2.fromOffset(28, 28)
+            swatch.BackgroundColor3 = Theme.toColor3(hex)
+            swatch.Text = ""
+            swatch.AutoButtonColor = false
+            swatch.LayoutOrder = index
+            swatch.Parent = palette
+            corner(swatch, 7)
+            local outline = Instance.new("UIStroke")
+            outline.Color = Color3.fromRGB(255, 255, 255)
+            outline.Thickness = 2
+            outline.Transparency = 0.72
+            outline.Parent = swatch
+            swatchStrokes[hex] = outline
+            swatch.Activated:Connect(function()
+                render(hex, true)
+            end)
+        end
+
+        hexBox.FocusLost:Connect(function()
+            render(hexBox.Text, true)
+        end)
+        render(selected, false)
+
+        return row, {
+            setValue = function(_, value)
+                return render(value, false)
+            end,
+            getValue = function()
+                return selected
+            end,
+        }
+    end
+
     function UI.numberInput(parent, text, initial, minimum, maximum, callback)
         local row = Instance.new("Frame")
         row.Size = UDim2.new(1, 0, 0, 50)
-        row.BackgroundColor3 = COLORS.card
+        themed(row, "BackgroundColor3", "card")
         row.Parent = parent
         corner(row, 10)
-        stroke(row, COLORS.border, 1, 0.22)
+        stroke(row, "border", 1, 0.22)
 
         local title = label(row, text, 11)
         title.Position = UDim2.fromOffset(13, 0)
         title.Size = UDim2.new(1, -126, 1, 0)
-        title.TextColor3 = COLORS.text
+        themed(title, "TextColor3", "text")
 
         local box = Instance.new("TextBox")
         box.AnchorPoint = Vector2.new(1, 0.5)
         box.Position = UDim2.new(1, -11, 0.5, 0)
         box.Size = UDim2.fromOffset(98, 31)
-        box.BackgroundColor3 = COLORS.background
-        box.TextColor3 = COLORS.accentBright
-        box.PlaceholderColor3 = COLORS.muted
+        themed(box, "BackgroundColor3", "background")
+        themed(box, "TextColor3", "accentBright")
+        themed(box, "PlaceholderColor3", "muted")
         box.ClearTextOnFocus = false
         box.Font = Enum.Font.GothamBold
         box.TextSize = 12
         box.Text = tostring(initial)
         box.Parent = row
         corner(box, 8)
-        stroke(box, COLORS.border, 1, 0.12)
+        stroke(box, "border", 1, 0.12)
 
         local value = math.clamp(tonumber(initial) or minimum, minimum, maximum)
         local function commit()
@@ -4866,6 +5262,7 @@ __factories["init"] = function()
     local AutoServerHop = __require("Features/AutoServerHop")
     local StateStore = __require("Core/StateStore")
     local ExecutorSettings = __require("Core/ExecutorSettings")
+    local Theme = __require("Core/Theme")
 
     local Main = {}
 
@@ -4917,10 +5314,12 @@ __factories["init"] = function()
         local lootCatalog = LootCatalog.new()
         local stateStore = StateStore.new()
         local executorSettings = ExecutorSettings.new()
+        local savedTheme = executorSettings:getTheme()
         local uiConfig = Config.UI_STYLE == "Legacy" and Config.UI or Config.MODERN_UI
         local window = UI.new(uiConfig.TITLE, {
             widthPercent = executorSettings:getWidthPercent(),
             icon = executorSettings:getIcon(),
+            theme = savedTheme,
         })
         local function getPage(pageName)
             if typeof(window.getPage) == "function" then
@@ -5241,6 +5640,29 @@ __factories["init"] = function()
 
         if typeof(UI.segmented) == "function" and typeof(window.setWidthPercent) == "function" then
             contentItem(UI.section(settingsPage, "INTERFACE"))
+            local customColorRows = {}
+            contentItem(UI.segmented(
+                settingsPage,
+                "Tema",
+                { "Dark", "Light", "Custom" },
+                savedTheme.name,
+                function(selected)
+                    local current = executorSettings:getTheme()
+                    if not window:setTheme(selected, current.custom) then
+                        setStatus("Interface: tema invalido ignorado")
+                        return
+                    end
+                    local saved = executorSettings:setTheme(selected)
+                    for _, row in ipairs(customColorRows) do
+                        row.Visible = selected == "Custom"
+                    end
+                    if saved then
+                        setStatus("Interface: tema " .. selected .. " salvo")
+                    else
+                        setStatus("Interface: tema aplicado; filesystem indisponivel")
+                    end
+                end
+            ))
             contentItem(UI.segmented(
                 settingsPage,
                 "Largura da interface",
@@ -5269,10 +5691,34 @@ __factories["init"] = function()
             ))
             local interfaceNote = contentItem(UI.info(
                 settingsPage,
-                "25% a 100% da tela. Configuracao local: GOATHub/settings.json.",
+                "Tema, cores e largura sao salvos localmente em GOATHub/settings.json.",
                 38
             ))
             interfaceNote.TextColor3 = window.colors.muted
+
+            if typeof(UI.colorPicker) == "function" and typeof(window.setTheme) == "function" then
+                local currentTheme = executorSettings:getTheme()
+                local customSection = contentItem(UI.section(settingsPage, "PALETA CUSTOM"))
+                customSection.Visible = currentTheme.name == "Custom"
+                table.insert(customColorRows, customSection)
+                for _, key in ipairs(Theme.KEYS) do
+                    local token = key
+                    local row = UI.colorPicker(
+                        settingsPage,
+                        Theme.LABELS[token] or token,
+                        currentTheme.custom[token],
+                        function(hex)
+                            executorSettings:setThemeColor(token, hex)
+                            local updated = executorSettings:getTheme()
+                            window:setTheme("Custom", updated.custom)
+                            setStatus("Paleta Custom: " .. (Theme.LABELS[token] or token))
+                        end
+                    )
+                    row.Visible = currentTheme.name == "Custom"
+                    contentItem(row)
+                    table.insert(customColorRows, row)
+                end
+            end
         end
 
         contentItem(UI.section(settingsPage, "AUTO REJOIN / SERVER HOP"))
@@ -5361,7 +5807,7 @@ __factories["init"] = function()
         end
 
         contentItem(UI.section(settingsPage, "SESSAO"))
-        local closeButton = contentItem(UI.button(settingsPage, "Fechar GOAT Hub STK", window.colors.card, 42))
+        local closeButton = contentItem(UI.button(settingsPage, "Fechar GOAT Hub STK", nil, 42))
         closeButton.Activated:Connect(function()
             app:Destroy()
         end)
